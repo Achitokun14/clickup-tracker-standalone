@@ -248,7 +248,7 @@ export class ProjectsService {
 			for (const task of plan.tasks) {
 				const created = await this.clickup.createTask(
 					listIds[task.list],
-					{ name: task.name, markdown_description: task.markdown_description },
+					{ name: task.name, markdown_content: task.markdown_content },
 					creds.token,
 				);
 				taskIndex[task.key] = created.id;
@@ -361,17 +361,20 @@ export class ProjectsService {
 			try {
 				await this.clickup.deleteFolder(project.clickup_folder_id, creds.token);
 			} catch (err) {
+				// archiveFolder() used to be the fallback here, but ClickUp v2
+				// PUT /folder/{id} silently ignores `archived: true` (verified
+				// CARL CLICKUP_TRACKER_REWRITE-004). Nothing else to try; the
+				// project row still gets soft-removed below so the daemon will
+				// stop syncing to this folder.
 				this.log.warn(
-					`folder delete failed: ${(err as Error).message}; archiving instead`,
-				);
-				await this.clickup.archiveFolder(
-					project.clickup_folder_id,
-					creds.token,
+					`folder delete failed: ${(err as Error).message}; project will be soft-removed but the ClickUp folder will remain visible until manually deleted in the UI`,
 				);
 			}
-		} else {
-			await this.clickup.archiveFolder(project.clickup_folder_id, creds.token);
 		}
+		// soft-remove (wipe=false): the folder stays in ClickUp untouched. The
+		// project row's status='removed' update below stops sync; the user can
+		// re-register the same path to reconnect. No `archiveFolder()` call —
+		// it was a no-op against ClickUp v2.
 
 		await this.prisma.$executeRawUnsafe(
 			`UPDATE clickup_tracker.projects

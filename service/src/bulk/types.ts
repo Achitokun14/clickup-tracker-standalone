@@ -79,7 +79,7 @@ export interface PlannedTask {
 	key: string; // stable id used for idempotent updates
 	list: ListKey;
 	name: string;
-	markdown_description: string;
+	markdown_content: string; // sent on the wire as ClickUp's `markdown_content` (not the deprecated `markdown_description`)
 	comments?: string[]; // posted as task comments after task creation
 	custom_fields?: Record<string, unknown>; // by field name; resolved to ids in the worker
 }

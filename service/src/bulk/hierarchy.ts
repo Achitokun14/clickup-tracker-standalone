@@ -39,7 +39,7 @@ export function planRepo(repo: RepoEntry, ext: RepoExtract): RepoPlan {
 		key: "overview",
 		list: "overview",
 		name: `${repo.displayName} — overview`,
-		markdown_description: buildOverviewDescription(repo, ext),
+		markdown_content: buildOverviewDescription(repo, ext),
 		custom_fields: {
 			"Repo path": repo.path,
 			Stack: repo.stack,
@@ -58,7 +58,7 @@ export function planRepo(repo: RepoEntry, ext: RepoExtract): RepoPlan {
 			key: `todo:${todo.file}:${todo.line}`,
 			list: "open_work",
 			name: `${todo.marker}: ${truncate(todo.text, 80)}`,
-			markdown_description: buildTodoDescription(repo, todo),
+			markdown_content: buildTodoDescription(repo, todo),
 			custom_fields: { Source: TASK_SOURCE },
 		});
 	}
@@ -67,7 +67,7 @@ export function planRepo(repo: RepoEntry, ext: RepoExtract): RepoPlan {
 			key: "todo:overflow",
 			list: "open_work",
 			name: `+${ext.todosOverflow} more TODO/FIXME items not listed`,
-			markdown_description:
+			markdown_content:
 				`${ext.todosOverflow} additional code-comment markers were truncated to keep the task volume manageable.` +
 				` Run a fresh \`grep -rnE '\\b(TODO|FIXME|XXX|HACK):'\` in the repo to see them all.`,
 			custom_fields: { Source: TASK_SOURCE },
@@ -80,7 +80,7 @@ export function planRepo(repo: RepoEntry, ext: RepoExtract): RepoPlan {
 			key: `state:${entry.source}:${entry.bucket}:${entry.index}`,
 			list: "open_work",
 			name: `[${entry.bucket}] ${truncate(entry.preview, 80)}`,
-			markdown_description: buildStateDescription(entry),
+			markdown_content: buildStateDescription(entry),
 			custom_fields: { Source: TASK_SOURCE },
 		});
 	}
@@ -91,7 +91,7 @@ export function planRepo(repo: RepoEntry, ext: RepoExtract): RepoPlan {
 			key: "history",
 			list: "history",
 			name: `${repo.displayName} — recent changes`,
-			markdown_description:
+			markdown_content:
 				`Last ${ext.changelogEntries.length} CHANGELOG entries.` +
 				` See task comments for the actual content.`,
 			comments: ext.changelogEntries.map(formatChangelogComment),
