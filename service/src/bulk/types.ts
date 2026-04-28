@@ -90,3 +90,86 @@ export interface RepoPlan {
 	lists: Record<ListKey, string>;
 	tasks: PlannedTask[];
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Per-repo Space model (Session 3 — consumed by the backfill
+// orchestrator in Session 4 and the bidirectional webhook in Session 5).
+// Pure data; no I/O. The planner returns a SpacePlan; the orchestrator
+// translates that into ClickUpDirectService calls.
+// ────────────────────────────────────────────────────────────────────
+
+export type CuPriority = 1 | 2 | 3 | 4; // 1=Urgent, 2=High, 3=Normal, 4=Low
+
+export interface StatusDef {
+	status: string;
+	color?: string;
+	type?: "open" | "custom" | "closed" | "done";
+	orderindex?: number;
+}
+
+export interface ViewDef {
+	listKey: string;
+	name: string;
+	type:
+		| "list"
+		| "board"
+		| "calendar"
+		| "table"
+		| "timeline"
+		| "workload"
+		| "activity"
+		| "map"
+		| "conversation"
+		| "gantt";
+	grouping?: unknown;
+	sorting?: unknown;
+	filters?: unknown;
+}
+
+export interface SpaceFolderPlan {
+	name: string;
+	emoji?: string;
+	lists: Array<{
+		key: string; // stable id used internally + as task_index sub-key
+		name: string;
+		statusOverrides?: StatusDef[];
+	}>;
+}
+
+export interface DocPagePlan {
+	name: string;
+	markdown: string;
+	subTitle?: string;
+}
+
+export interface PlannedSpaceTask {
+	key: string; // task_index key, e.g. "commit:<sha>" / "bug:..." / "adr:slug"
+	listKey: string; // resolves to a ClickUp list_id at apply-time
+	name: string; // [YYYY-MM-DD] <type>(<scope>): <subject>
+	markdown_content: string;
+	status: string;
+	priority?: CuPriority;
+	tags: string[];
+	startDateMs?: number; // author date
+	dueDateMs?: number; // commit date
+	points?: number;
+	timeEstimateMs?: number;
+	assigneeEmails?: string[];
+	parentKey?: string; // for subtasks (file-level)
+	comments?: string[];
+	customFieldValues?: Array<{ name: string; value: unknown }>; // Phase 2 only
+}
+
+export interface SpacePlan {
+	spaceName: string;
+	multipleAssignees: boolean;
+	features: Record<string, unknown>;
+	statuses: StatusDef[]; // Space-level cascade
+	bugStatuses: StatusDef[]; // Bugs List override
+	folders: SpaceFolderPlan[];
+	tags: string[]; // pre-created on the Space before any tasks land
+	doc: { name: string; pages: DocPagePlan[] };
+	views: ViewDef[];
+	tasks: PlannedSpaceTask[];
+	templateStatus: "configured" | "inline-fallback" | "pending";
+}
