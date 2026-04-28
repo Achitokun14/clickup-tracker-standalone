@@ -9,6 +9,7 @@ services:
     volumes:
       - cup_pgdata:/var/lib/postgresql/data
       - ./schema/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+      - ./schema/02_per_repo_space.sql:/docker-entrypoint-initdb.d/02-per-repo-space.sql:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
