@@ -19,6 +19,16 @@ $EDITOR .env
 #   CLICKUP_TEAM_ID=12345678
 ```
 
+### Don't have a personal API token?
+
+If your ClickUp account is in a workspace that's disabled personal tokens (some orgs do), use the OAuth path instead:
+
+1. Create a ClickUp OAuth app at <https://app.clickup.com/settings/apps> with redirect URL `http://localhost:8765`.
+2. Fill `CLICKUP_CLIENT_ID` + `CLICKUP_CLIENT_SECRET` in `.env`.
+3. Run `bash scripts/oauth-bootstrap.sh` — it opens your browser, captures the auth callback, and writes the resulting `CLICKUP_API_TOKEN` + `CLICKUP_TEAM_ID` into `.env`.
+
+Full walk-through in [`../CREDS.md` § Path B](../CREDS.md).
+
 ## 2. Run the installer
 
 ```bash

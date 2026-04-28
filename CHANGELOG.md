@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **OAuth bootstrap** (`scripts/oauth-bootstrap.sh` + `oauth-bootstrap.py`) — one-shot browser flow that exchanges a ClickUp OAuth `client_id` + `client_secret` for an access token and writes it into `.env`. Lets users whose accounts disallow personal API tokens still run the tracker. Auto-detects the workspace ID via `/api/v2/team`.
+- `.env.example` documents both the personal-token path and the OAuth path; `CREDS.md` explains both with end-to-end instructions.
+
+### Changed
+
+- `POST /projects` now ignores soft-removed (`status='removed'`) rows when checking for existing registrations — re-registering a previously untracked path now resurrects it cleanly with a fresh `hookSecret` instead of returning `alreadyTracked: true` with an empty secret.
+- Daemon defensively merges incoming `extract` payloads with safe defaults — partial extracts (e.g. `{readme, changelog}` only, missing the `todos` array) no longer 500 with `ext.todos is not iterable`.
+
+### Fixed
+
+- **Post-commit hook on Debian/Ubuntu (`mawk`)** — the TODO/FIXME scanner used GNU-awk-only syntax (3-arg `match()`), which silently failed on every system where `awk = mawk` (the default on most Debian-derived distros). Rewritten in POSIX-only awk (`RSTART`/`RLENGTH`). Hook now works on `mawk`, `gawk`, `nawk`, and macOS BSD awk. Caught during end-to-end testing where commits weren't reaching the daemon.
+- `.gitignore` now covers `.env.bak*` and `.env.backup*` (used by `oauth-bootstrap.sh` when it rewrites `.env`).
+
+### Removed
+
+- `zod` dropped from `mcp/package.json` top-level dependencies — it was a phantom dep, never imported by `server.ts` (the MCP SDK pulls it transitively where actually needed).
+
 ## [0.1.0] - 2026-04-28
 
 ### Added

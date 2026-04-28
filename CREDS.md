@@ -16,7 +16,9 @@ The actual secret *values* go into a local `SECRETS.md` (gitignored) and the dae
 
 ## 1. ClickUp API token (required)
 
-The daemon uses one ClickUp API token to authenticate every request to ClickUp's REST API.
+The daemon uses one ClickUp API token to authenticate every request to ClickUp's REST API. There are **two ways to obtain a valid token**, and the daemon doesn't care which path you took — both produce a value that goes in `CLICKUP_API_TOKEN`.
+
+### Path A — Personal API Token (simplest, solo use)
 
 **Format:** `pk_XXXXXXXXXXXXXXXXXXXXXXXXX` (string starting with `pk_`).
 
@@ -26,11 +28,44 @@ The daemon uses one ClickUp API token to authenticate every request to ClickUp's
 3. Under **API Token**, click **Generate** (or **Regenerate**).
 4. Copy the value immediately — ClickUp only displays it once.
 
-**Where it goes:**
-- `SECRETS.md` → `CLICKUP_API_TOKEN` row
-- `.env` → `CLICKUP_API_TOKEN=pk_...`
+If your ClickUp account is in a workspace where the admin has disabled personal API tokens, you'll see no "Generate" button. Use Path B instead.
 
-**Permissions implied:** the token inherits your ClickUp account's permissions. Use a service account if you don't want the tracker to act as your personal user.
+### Path B — OAuth App (workspace-restricted accounts, team scoping)
+
+ClickUp OAuth access tokens are bearer tokens that work identically to personal tokens once you have one — the daemon's `Authorization: <token>` header accepts both. The OAuth flow just produces the same kind of value via a one-time browser dance.
+
+**Setup:**
+1. Go to <https://app.clickup.com/settings/apps>.
+2. Click **Create new app**.
+3. Set the **Redirect URL** to `http://localhost:8765`. (You can pick a different port, but match it in `.env` under `CLICKUP_REDIRECT_URI`.)
+4. Save. ClickUp shows you a **Client ID** and **Client Secret**.
+5. In the repo's `.env`, fill in:
+   ```env
+   CLICKUP_CLIENT_ID=...your client id...
+   CLICKUP_CLIENT_SECRET=...your client secret...
+   CLICKUP_REDIRECT_URI=http://localhost:8765
+   ```
+6. Run the bootstrap:
+   ```bash
+   bash scripts/oauth-bootstrap.sh
+   ```
+   The script:
+   - Starts a tiny listener on the redirect URL's port.
+   - Prints the ClickUp authorize URL and tries to open your browser.
+   - You click **Connect Workspace** → ClickUp redirects to the listener.
+   - The listener captures the `?code=...`, exchanges it for an `access_token` via `/api/v2/oauth/token`, and writes the token into `.env` as `CLICKUP_API_TOKEN`.
+   - It also calls `/api/v2/team` and writes the resolved `CLICKUP_TEAM_ID` (and `CLICKUP_TEAM_NAME`).
+7. Restart the daemon: `docker compose up -d --force-recreate clickup-tracker`.
+
+**Where the token goes (either path):**
+- `SECRETS.md` → `CLICKUP_API_TOKEN` row
+- `.env` → `CLICKUP_API_TOKEN=...`
+
+**Permissions implied:**
+- Path A: token inherits your ClickUp account's permissions. Use a service account if you don't want the tracker to act as your personal user.
+- Path B: token is scoped to the workspaces you authorized when you clicked **Connect Workspace**. Authorize one workspace at a time for tightest scope.
+
+**Rotating an OAuth token:** delete the value of `CLICKUP_API_TOKEN` in `.env` and re-run `scripts/oauth-bootstrap.sh`.
 
 ---
 
