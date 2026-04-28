@@ -1,0 +1,67 @@
+# ── Secrets and per-machine config ─────────────────────────────────
+.env
+.env.local
+.env.*.local
+SECRETS.md
+*.secret
+*.pem
+*.key
+id_rsa*
+
+# ── Node / TypeScript ──────────────────────────────────────────────
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+.pnp.*
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ── Test coverage ──────────────────────────────────────────────────
+coverage/
+*.lcov
+.nyc_output/
+
+# ── Logs ───────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Editor / IDE ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ── OS metadata ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Caches ─────────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+
+# ── Docker / runtime ───────────────────────────────────────────────
+*.pid
+*.sock
+
+# ── Local sandboxes / scratch ──────────────────────────────────────
+/tmp/
+/scratch/
+/.scratch/
+
+# Note: per-user runtime caches live OUTSIDE this repo at
+#   ~/.cache/cup-cli/buffer/        (post-commit retry buffer)
+#   ~/.config/clickup-tracker/      (gateway config + per-project hook secrets)
+# They are user-scoped, not repo-scoped — nothing to ignore here.
