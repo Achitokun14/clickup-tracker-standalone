@@ -1,0 +1,16 @@
+version: "1.0.0"
+title: "Snapshot ClickUp tree for current project"
+description: "Takes a manual backup of the project's ClickUp Folder/Lists/Tasks tree."
+parameters:
+  - key: cwd
+    description: "Working directory of the project (default: current directory)."
+    input_type: string
+    requirement: optional
+prompt: |
+  Use the clickup-tracker MCP extension.
+
+  1. `clickup_resolve_project` with path = {{ cwd | default("$(pwd)") }}.
+  2. If unresolved: stop and say so.
+  3. `clickup_backup_project` with the resolved id.
+  4. Print `backup.id`, `backup.task_count`, `backup.list_count`. Tell the
+     user how to restore: pass the backup id to the `clickup-restore` recipe.

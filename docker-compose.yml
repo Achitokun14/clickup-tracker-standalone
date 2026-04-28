@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cup}
+      POSTGRES_DB: ${POSTGRES_DB:-clickup_tracker}
+    volumes:
+      - cup_pgdata:/var/lib/postgresql/data
+      - ./schema/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cup} -d ${POSTGRES_DB:-clickup_tracker}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - cup_redisdata:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickup-tracker:
+    build:
+      context: ./service
+    restart: always
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      PORT: 4020
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cup}:${POSTGRES_PASSWORD:-cup}@postgres:5432/${POSTGRES_DB:-clickup_tracker}?schema=public
+      REDIS_URL: redis://redis:6379
+      # ClickUp credentials (env-only in standalone — no clickup.workspaces JOIN)
+      CLICKUP_API_TOKEN: ${CLICKUP_API_TOKEN}
+      CLICKUP_TEAM_ID: ${CLICKUP_TEAM_ID}
+      CLICKUP_TEAM_NAME: ${CLICKUP_TEAM_NAME:-Default}
+      CLICKUP_API_BASE: ${CLICKUP_API_BASE:-https://api.clickup.com/api/v2}
+      CLICKUP_RATE_LIMIT: ${CLICKUP_RATE_LIMIT:-90}
+      DEFAULT_CLICKUP_SPACE_NAME: ${DEFAULT_CLICKUP_SPACE_NAME:-Default}
+      # Optional bearer token for internal routes. Unset = open (localhost only).
+      STANDALONE_API_TOKEN: ${STANDALONE_API_TOKEN:-}
+      # Drift cron interval (minutes). Lower in dev to exercise the path.
+      CUP_TRACKER_DRIFT_MINUTES: ${CUP_TRACKER_DRIFT_MINUTES:-60}
+      # Optional bearer token for /public/metrics (unset = open).
+      METRICS_AUTH_TOKEN: ${METRICS_AUTH_TOKEN:-}
+    ports:
+      - "${TRACKER_PORT:-4020}:4020"
+
+volumes:
+  cup_pgdata:
+  cup_redisdata:

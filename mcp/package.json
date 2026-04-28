@@ -1,0 +1,31 @@
+{
+	"name": "clickup-tracker-mcp",
+	"version": "0.1.0",
+	"description": "Universal MCP server that wraps the clickup-tracker daemon HTTP API. Works with any MCP-capable agent (Claude Code, Goose, OpenCode, Cursor, Cline, Continue).",
+	"license": "AGPL-3.0-or-later",
+	"type": "module",
+	"bin": {
+		"clickup-tracker-mcp": "dist/server.js"
+	},
+	"main": "dist/server.js",
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"start": "node dist/server.js",
+		"dev": "tsc -w -p tsconfig.json"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.0.0",
+		"zod": "^3.23.8"
+	},
+	"devDependencies": {
+		"typescript": "^5.6.0",
+		"@types/node": "^22.0.0"
+	},
+	"engines": {
+		"node": ">=20"
+	}
+}

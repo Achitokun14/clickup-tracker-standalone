@@ -1,0 +1,21 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+// Minimal model required for Prisma client generation.
+// Actual queries use $queryRaw/$executeRaw against multi-schema tables
+// in the `clickup_tracker` schema (see dashboard/init-schemas.sql).
+model PrismaMetadata {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("_prisma_metadata")
+}

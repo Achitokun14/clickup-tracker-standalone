@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: clickup-tracker (standalone)
+  version: 0.1.0
+  description: |
+    Self-hostable daemon that mirrors local git repositories to ClickUp.
+    Routes are exposed at the daemon root (default `:4020`).
+
+    Auth model:
+    - Internal routes (`/projects/*`) require the static `STANDALONE_API_TOKEN`
+      bearer if it is set; if unset, internal routes are open (suitable for
+      localhost-only deployments).
+    - Public routes (`/public/*`) are HMAC-only — they verify a per-project
+      `hook_secret` against the request body and `X-CUP-*` headers.
+
+servers:
+  - url: http://localhost:4020
+    description: Local daemon (default)
+
+paths:
+  /health:
+    get:
+      summary: Service liveness probe
+      security: []
+      responses:
+        '200': { description: OK }
+
+  /projects:
+    get:
+      summary: List active projects for the active organisation
+      responses:
+        '200':
+          description: ProjectSummary array
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProjectSummary' }
+    post:
+      summary: Register a project (idempotent on org+localPath)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterProjectDto' }
+      responses:
+        '201':
+          description: Registration result. `hookSecret` is returned ONCE.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisterResult' }
+
+  /projects/resolve:
+    get:
+      summary: Longest-prefix match a CWD against tracked projects
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Match or null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  match:
+                    nullable: true
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      localPath: { type: string }
+                      displayName: { type: string }
+
+  /projects/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Get project detail
+      responses:
+        '200':
+          description: ProjectDetail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Update display name / status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchProjectDto' }
+      responses:
+        '200':
+          description: Updated detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectDetail' }
+    delete:
+      summary: Untrack project (takes pre_remove backup)
+      parameters:
+        - in: query
+          name: wipe
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Removal receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: boolean }
+                  preRemoveBackupId:
+                    type: string
+                    format: uuid
+                    nullable: true
+
+  /projects/{id}/sync:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Enqueue an immediate sync job (without waiting for the 5-min cron)
+      responses:
+        '200':
+          description: Job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  queued: { type: boolean }
+                  kind: { type: string, enum: [git_drift] }
+
+  /projects/{id}/backup:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Take a manual snapshot of the project's ClickUp tree
+      responses:
+        '200':
+          description: Backup record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  backup: { $ref: '#/components/schemas/BackupRecord' }
+
+  /projects/{id}/backups:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: List the project's snapshots
+      responses:
+        '200':
+          description: Backup list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  backups:
+                    type: array
+                    items: { $ref: '#/components/schemas/BackupRecord' }
+
+  /projects/{id}/restore:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      summary: Restore from a backup. Always takes a pre_revert snapshot first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [backupId]
+              properties:
+                backupId: { type: string, format: uuid }
+                mode:
+                  type: string
+                  enum: [additive, merge, replace]
+                  default: additive
+                confirm:
+                  type: boolean
+                  description: Required for `replace` mode
+      responses:
+        '200':
+          description: Restore result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  backupId: { type: string, format: uuid }
+                  mode: { type: string }
+                  preRevertBackupId: { type: string, format: uuid }
+                  created: { type: integer }
+                  updated: { type: integer }
+                  skipped: { type: integer }
+
+  /public/metrics:
+    get:
+      summary: Prometheus scrape endpoint
+      description: |
+        Returns metrics in Prometheus text format. If METRICS_AUTH_TOKEN
+        is set, requires Bearer auth.
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema: { type: string }
+        '401':
+          description: METRICS_AUTH_TOKEN required but missing/wrong
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /public/git-events:
+    post:
+      summary: Post-commit webhook (HMAC-protected)
+      security:
+        - HMAC: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GitEventDto' }
+      responses:
+        '200':
+          description: Event receipt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventReceipt' }
+        '401':
+          description: BAD_HOOK_SIGNATURE
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /public/prompt-events:
+    post:
+      summary: Claude Code Stop-hook webhook (HMAC-protected)
+      security:
+        - HMAC: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromptEventDto' }
+      responses:
+        '200':
+          description: Event receipt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventReceipt' }
+
+components:
+  securitySchemes:
+    HMAC:
+      type: apiKey
+      in: header
+      name: X-CUP-Signature
+      description: |
+        sha256=<hex(hmac_sha256(rawBody, hookSecret))>; also requires
+        X-CUP-Project-ID and X-CUP-Timestamp headers (drift ≤ 5 min).
+  responses:
+    NotFound:
+      description: Project not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [ok, code, message, retryable]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        code:
+          type: string
+          enum:
+            - PROJECT_NOT_FOUND
+            - WORKSPACE_TOKEN_MISSING
+            - BAD_HOOK_SIGNATURE
+            - HOOK_TIMESTAMP_DRIFT
+            - RATE_LIMITED
+            - INVALID_PAYLOAD
+            - INTERNAL_ERROR
+        message: { type: string }
+        retryable: { type: boolean }
+        retryAfterMs: { type: integer }
+
+    ProjectSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        localPath: { type: string }
+        displayName: { type: string }
+        status: { type: string, enum: [active, paused, removed] }
+        folderUrl: { type: string }
+        taskCount: { type: integer }
+        lastSyncedAt: { type: string, format: date-time, nullable: true }
+
+    ProjectDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProjectSummary'
+        - type: object
+          properties:
+            gitRemoteUrl: { type: string, nullable: true }
+            scopeConfig:
+              type: object
+              properties:
+                mode: { type: string, enum: [root, services, custom] }
+                paths:
+                  type: array
+                  items: { type: string }
+            clickupTeamId: { type: string }
+            clickupSpaceId: { type: string }
+            clickupFolderId: { type: string }
+            listIds:
+              type: object
+              properties:
+                overview: { type: string }
+                open_work: { type: string }
+                history: { type: string }
+            taskIndex:
+              type: object
+              additionalProperties: { type: string }
+
+    RegisterProjectDto:
+      type: object
+      required: [localPath]
+      properties:
+        localPath: { type: string }
+        displayName: { type: string }
+        gitRemoteUrl: { type: string }
+        spaceName: { type: string }
+        scopeMode:
+          type: string
+          enum: [root, services, custom]
+          default: root
+        scopePaths:
+          type: array
+          items: { type: string }
+        dryRun: { type: boolean, default: false }
+        extract: { $ref: '#/components/schemas/RepoExtract' }
+
+    RepoExtract:
+      type: object
+      properties:
+        readme: { type: string, nullable: true }
+        changelogEntries: { type: array, items: { type: object } }
+        stateEntries: { type: array, items: { type: object } }
+        todos: { type: array, items: { type: object } }
+
+    PatchProjectDto:
+      type: object
+      properties:
+        displayName: { type: string }
+        status: { type: string, enum: [active, paused] }
+
+    RegisterResult:
+      type: object
+      properties:
+        projectId: { type: string, format: uuid }
+        folderId: { type: string }
+        folderUrl: { type: string }
+        spaceId: { type: string }
+        listIds:
+          type: object
+          properties:
+            overview: { type: string }
+            open_work: { type: string }
+            history: { type: string }
+        hookSecret:
+          type: string
+          description: Returned ONCE. Save it; not re-readable.
+        taskCount: { type: integer }
+        alreadyTracked: { type: boolean }
+
+    BackupRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        trigger: { type: string, enum: [manual, pre_revert, pre_remove, periodic] }
+        taken_at: { type: string, format: date-time }
+        task_count: { type: integer }
+        list_count: { type: integer }
+
+    GitEventDto:
+      type: object
+      required: [commit_sha, message]
+      properties:
+        commit_sha: { type: string }
+        branch: { type: string }
+        author: { type: string }
+        committer_email: { type: string }
+        committed_at: { type: string, format: date-time }
+        message: { type: string }
+        remote_url: { type: string }
+        files_changed:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              status: { type: string }
+        todo_diffs:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              op: { type: string, enum: [add, remove] }
+              line: { type: integer }
+              marker: { type: string }
+              text: { type: string }
+
+    PromptEventDto:
+      type: object
+      properties:
+        session_id: { type: string }
+        prompt_excerpt: { type: string }
+        outcome_summary: { type: string }
+        files_touched:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              status: { type: string }
+
+    EventReceipt:
+      type: object
+      properties:
+        ok: { type: boolean }
+        eventId: { type: string, format: uuid }
+        replayed: { type: boolean }
+        actionsCount: { type: integer }
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum:
+                  - skipped
+                  - replayed
+                  - create_task
+                  - close_task
+                  - start_task
+                  - comment
+                  - conflict_skipped
+              task_id: { type: string }
+              reason: { type: string }
+              source: { type: string }
+              list_key: { type: string }

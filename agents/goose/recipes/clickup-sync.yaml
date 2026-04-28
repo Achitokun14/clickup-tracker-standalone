@@ -1,0 +1,17 @@
+version: "1.0.0"
+title: "Force an immediate clickup-tracker sync"
+description: "Resolves the project for the current working directory and triggers a drift sync."
+parameters:
+  - key: cwd
+    description: "Working directory to resolve (default: current directory)."
+    input_type: string
+    requirement: optional
+prompt: |
+  Use the clickup-tracker MCP extension.
+
+  1. Call `clickup_resolve_project` with path = {{ cwd | default("$(pwd)") }}.
+  2. If `match.id` is null: tell the user this directory isn't tracked and
+     suggest the `clickup-register` recipe.
+  3. Otherwise call `clickup_sync_project` with that project id.
+  4. Confirm the sync was queued and explain that the BullMQ worker will
+     pick it up within seconds.

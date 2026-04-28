@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or design discussion
+    url: https://github.com/Achitokun14/clickup-tracker-standalone/discussions
+    about: Use Discussions for "how do I…", "what's the right way to…", and "should I PR this?" conversations.
+  - name: Security vulnerability (private)
+    url: https://github.com/Achitokun14/clickup-tracker-standalone/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.

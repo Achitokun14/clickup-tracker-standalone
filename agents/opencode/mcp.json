@@ -1,0 +1,14 @@
+{
+	"mcpServers": {
+		"clickup-tracker": {
+			"command": "node",
+			"args": [
+				"/absolute/path/to/clickup-tracker-standalone/mcp/dist/server.js"
+			],
+			"env": {
+				"CUP_TRACKER_BASE_URL": "http://localhost:4020",
+				"CUP_TRACKER_ORG_ID": "00000000-0000-0000-0000-000000000000"
+			}
+		}
+	}
+}

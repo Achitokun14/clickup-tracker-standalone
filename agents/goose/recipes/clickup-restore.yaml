@@ -1,0 +1,26 @@
+version: "1.0.0"
+title: "Restore ClickUp tree from a backup"
+description: "Restores a project's ClickUp Folder from a snapshot. Defaults to additive mode."
+parameters:
+  - key: backup_id
+    description: "The backup ID to restore."
+    input_type: string
+    requirement: required
+  - key: mode
+    description: "additive | merge | replace. Default additive."
+    input_type: string
+    requirement: optional
+  - key: cwd
+    description: "Working directory of the project (default: current directory)."
+    input_type: string
+    requirement: optional
+prompt: |
+  Use the clickup-tracker MCP extension.
+
+  1. `clickup_resolve_project` with path = {{ cwd | default("$(pwd)") }}.
+  2. If `mode` is "replace", confirm with the user before proceeding —
+     replace mode is destructive (it wipes and recreates from snapshot).
+  3. `clickup_restore_project` with backupId = {{ backup_id }}, mode =
+     {{ mode | default("additive") }}, confirm = (true if replace, else false).
+  4. Surface `created`, `updated`, `skipped`, and `preRevertBackupId` so the
+     user knows how to revert the revert if needed.

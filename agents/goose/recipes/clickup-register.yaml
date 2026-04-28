@@ -1,0 +1,22 @@
+version: "1.0.0"
+title: "Register current repo with clickup-tracker"
+description: "Creates a ClickUp Folder + 3 Lists for this repo and returns the one-time hookSecret."
+parameters:
+  - key: local_path
+    description: "Absolute path to the repo to register."
+    input_type: string
+    requirement: required
+  - key: display_name
+    description: "Display name for the ClickUp Folder. Defaults to the repo basename."
+    input_type: string
+    requirement: optional
+prompt: |
+  Use the clickup-tracker MCP extension to register the repo at {{ local_path }}
+  {% if display_name %} with display name "{{ display_name }}"{% endif %}.
+  Call `clickup_register_project` with the path.
+
+  Then surface the response — especially the `hookSecret` (it is returned ONCE
+  and must be saved). Print the `folderUrl` and the `taskCount`.
+
+  If the response indicates `alreadyTracked: true`, just confirm the existing
+  folder URL — no new bulk-create happened.

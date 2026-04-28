@@ -1,0 +1,12 @@
+version: "1.0.0"
+title: "Summarize clickup-tracker projects"
+description: "Lists all tracked projects with their last-sync time and task count."
+prompt: |
+  Use the clickup-tracker MCP extension. Call `clickup_list_projects` and
+  format the output as a table:
+
+  | project | status | last_synced | tasks | folder_url |
+
+  Highlight any project where `status` is paused or removed, or where
+  `lastSyncedAt` is more than 30 minutes old. Suggest `clickup_sync_project`
+  for stale ones.
