@@ -38,9 +38,15 @@ CREATE TABLE IF NOT EXISTS clickup_tracker.clickup_inbound_events (
   task_id            TEXT,
   payload            JSONB NOT NULL,
   processed_at       TIMESTAMPTZ,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (clickup_team_id, webhook_event_id, COALESCE(history_item_id, ''))
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- COALESCE() is not legal inside a table-level UNIQUE constraint, so this dedup
+-- key lives as a separate functional unique index. Treats absent history_item_id
+-- as the empty string for dedup purposes (some webhook events have it, some don't).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_dedup
+  ON clickup_tracker.clickup_inbound_events
+  (clickup_team_id, webhook_event_id, COALESCE(history_item_id, ''));
 
 CREATE INDEX IF NOT EXISTS idx_projects_team_space
   ON clickup_tracker.projects (clickup_team_id, clickup_space_id);
