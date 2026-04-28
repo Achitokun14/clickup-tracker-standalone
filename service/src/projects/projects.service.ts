@@ -131,10 +131,14 @@ export class ProjectsService {
 	): Promise<RegisterResult> {
 		if (!dto.localPath) throw new BadRequestException("localPath required");
 
-		// Idempotency: same (org, localPath) — return existing.
+		// Idempotency: same (org, localPath) and still active/paused — return existing.
+		// `removed` rows are ignored here so users can re-register a path they
+		// previously untracked. The stale row is cleared before INSERT below.
 		const existing = await this.prisma.$queryRawUnsafe<ProjectRow[]>(
 			`SELECT * FROM clickup_tracker.projects
-       WHERE organisation_id = $1::uuid AND local_path = $2`,
+       WHERE organisation_id = $1::uuid
+         AND local_path = $2
+         AND status <> 'removed'`,
 			orgId,
 			dto.localPath,
 		);
@@ -155,7 +159,7 @@ export class ProjectsService {
 		if (dto.dryRun) {
 			// Validate inputs without mutating ClickUp.
 			const repo = this.repoFromDto(dto);
-			const ext = dto.extract ?? this.emptyExtract();
+			const ext = { ...this.emptyExtract(), ...(dto.extract ?? {}) };
 			const plan = planRepo(repo, ext);
 			return {
 				projectId: "<dry-run>",
@@ -233,10 +237,14 @@ export class ProjectsService {
 		const hookSecret = randomBytes(32).toString("hex");
 
 		// Plan + create initial tasks if extract was supplied.
+		// Defensively merge with defaults — a partial extract from a thin client
+		// (e.g. only {readme, changelog}) would otherwise crash planRepo on the
+		// missing array fields.
 		const taskIndex: Record<string, string> = {};
 		let plan: RepoPlan | null = null;
 		if (dto.extract) {
-			plan = planRepo(repo, dto.extract);
+			const ext = { ...this.emptyExtract(), ...dto.extract };
+			plan = planRepo(repo, ext);
 			for (const task of plan.tasks) {
 				const created = await this.clickup.createTask(
 					listIds[task.list],
@@ -252,6 +260,18 @@ export class ProjectsService {
 				}
 			}
 		}
+
+		// Clear any soft-removed row at this (org, local_path) so the INSERT
+		// below doesn't trip the unique constraint when a user re-registers a
+		// previously untracked path.
+		await this.prisma.$executeRawUnsafe(
+			`DELETE FROM clickup_tracker.projects
+       WHERE organisation_id = $1::uuid
+         AND local_path = $2
+         AND status = 'removed'`,
+			orgId,
+			dto.localPath,
+		);
 
 		// Persist the project row.
 		const inserted = await this.prisma.$queryRawUnsafe<ProjectRow[]>(

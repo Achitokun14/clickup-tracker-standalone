@@ -77,19 +77,30 @@ remote=\$(git remote get-url origin 2>/dev/null || echo "")
 files=\$(git diff-tree --no-commit-id --name-status -r "\${sha}" 2>/dev/null | awk '{ printf "{\"path\":\"%s\",\"status\":\"%s\"},\n", \$2, \$1 }' | sed 's/,\$//')
 
 # TODO/FIXME/XXX/HACK churn in this commit's diff.
+# POSIX-awk only (mawk/nawk/gawk/macOS awk all OK). Failures swallowed
+# so a malformed diff never fails the commit.
 todos=\$(git show --unified=0 --pretty=format: "\${sha}" 2>/dev/null | awk '
-  /^diff --git/ { sub("^a/", "", \$3); file=\$3 }
-  /^@@/ { match(\$0, /\\+([0-9]+)/, m); line=m[1]-1 }
+  /^diff --git/ { sub(/^a\\//, "", \$3); file=\$3 }
+  /^@@/ {
+    if (match(\$0, /\\+[0-9]+/)) line = substr(\$0, RSTART+1, RLENGTH-1) - 1
+  }
   /^[+-][^+-]/ {
     op = (substr(\$0, 1, 1) == "+") ? "add" : "remove"
     text = substr(\$0, 2)
-    if (match(text, /(TODO|FIXME|XXX|HACK):[[:space:]]*(.+)/, mm)) {
-      gsub(/"/, "\\\\\"", mm[2])
-      printf "{\"file\":\"%s\",\"op\":\"%s\",\"line\":%d,\"marker\":\"%s\",\"text\":\"%s\"},\n", file, op, line, mm[1], mm[2]
+    if (match(text, /(TODO|FIXME|XXX|HACK):[ \\t]*/)) {
+      mpos = RSTART; mlen = RLENGTH
+      head = substr(text, mpos, mlen)
+      if (match(head, /[A-Z]+/)) marker = substr(head, RSTART, RLENGTH)
+      msg = substr(text, mpos + mlen)
+      gsub(/\\\\/, "\\\\\\\\", msg)
+      gsub(/"/, "\\\\\"", msg)
+      gsub(/\\\\/, "\\\\\\\\", file)
+      gsub(/"/, "\\\\\"", file)
+      printf "{\"file\":\"%s\",\"op\":\"%s\",\"line\":%d,\"marker\":\"%s\",\"text\":\"%s\"},\n", file, op, line, marker, msg
     }
     if (op == "add") line++
   }
-' | sed 's/,\$//')
+' 2>/dev/null | sed 's/,\$//' || true)
 
 body=\$(jq -n \\
   --arg sha "\$sha" \\
