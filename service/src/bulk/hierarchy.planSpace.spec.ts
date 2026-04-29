@@ -286,4 +286,35 @@ describe("planSpace", () => {
 		expect(plan.templateStatus).toBe("inline-fallback");
 		expect(plan.multipleAssignees).toBe(true);
 	});
+
+	it("handles an empty-history repo: emits the scaffold but no commit/sprint tasks", () => {
+		// Plan §22 step 14: a freshly `git init`-ed repo backfills cleanly —
+		// Space + folders + lists + Doc + views all present, just no commit
+		// tasks and no per-sprint Lists.
+		const plan = planSpace(
+			makeRepo(),
+			makeExtract(),
+			makeHistory({ commits: [], sprints: [] }),
+		);
+		// Static scaffold still present.
+		expect(plan.folders.map((f) => f.name)).toEqual([
+			"📦 Backlog & Bugs",
+			"🚧 Active Work",
+			"📜 History",
+			"📚 Knowledge",
+		]);
+		// No sprint-keyed lists nested under History.
+		const historyFolder = plan.folders.find((f) => f.name === "📜 History")!;
+		expect(historyFolder.lists).toHaveLength(0);
+		// No commit-keyed tasks.
+		expect(plan.tasks.filter((t) => t.key.startsWith("commit:"))).toHaveLength(
+			0,
+		);
+		// Doc still emitted.
+		expect(plan.doc.pages).toHaveLength(5);
+		// No truncation warning.
+		expect(
+			plan.tasks.find((t) => t.key === "warn:history-truncated"),
+		).toBeUndefined();
+	});
 });

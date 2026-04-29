@@ -102,6 +102,12 @@ The script:
    row, enqueues `cup-backfill`.
 3. Polls `/backfill` every 5 s until `done | failed`.
 
+## Empty-history repo (fresh `git init`)
+
+Registering a freshly `git init`-ed repo with no commits is supported. The orchestrator emits the full Space scaffold (Folders, Active Sprint / In Review / Open Work / Bugs / ADRs / Agent Sessions Lists, Doc with 5 pages, default Views) but no commit tasks, no per-sprint Lists under `📜 History`, and no truncation warning. The Active Sprint List remains empty until the first commit fires the post-commit hook — at which point the lifecycle handler creates the per-week Sprint List on demand and lands the task there.
+
+If you need a backfilled Sprint List for the current week before the first commit, run `POST /projects/:id/replan`.
+
 ## Daemon won't start
 
 ```bash
