@@ -30,6 +30,25 @@ All notable changes to this project are documented here. The format follows [Kee
 - **Per-repo Space schema delta** (`schema/02_per_repo_space.sql`): 8 new project columns, 2 new tables (`workspace_settings`, `clickup_inbound_events`), 4 new indexes including a functional UNIQUE on inbound dedup.
 - **`.github/CODEOWNERS`** so branch-protection's `require_code_owner_reviews` is satisfiable.
 
+#### Sessions 6–8 follow-ups (PRs #21–#33)
+
+- **Session 7 docs + observability** (#21) — `docs/runbook.md` operational recipes, `docs/space-model.md` per-repo Space reference, Pino redact list expanded for hookSecret/webhook_secret/Authorization, 3 Prometheus metrics on `/public/metrics`.
+- **`POST /projects/:id/template-configured`** + `clickup_mark_template_configured` MCP tool + `/clickup-template-configured` slash command (#30) — flips `template_status` to `configured` after the manual ClickUp UI walkthrough so the daemon emits literal status names instead of mapping down to `to do`/`complete`. Walkthrough lives in `docs/clickup-template/README.md` (#27).
+- **Doc Changelog page append on default-branch commits** (#28) — `events.service.tryAppendChangelogPage` looks up the page once via `listDocPages`, memoizes it in `task_index['doc_page:Changelog']`, and `updateDocPage(content_edit_mode='append')` per commit.
+- **Client-side subdir-scope early-out in post-commit hook** (#31) — `install-git-hook.sh` accepts `--scope-mode subdir --scope-paths "svc/,mcp/"`; the generated hook walks `git diff-tree` and `exit 0`s silently when no match. Daemon-side filter remains authoritative; this skips HMAC + curl entirely. `clickup-add` slash command auto-passes the flags when `scopeConfig.mode='subdir'`.
+- **Agent-Session ↔ commit dependency linkage** (#33) — when a prompt-event arrives with `files_touched`, the daemon links the resulting Agent-Session task to the most-recent commit task whose changed files overlap (`addDependency(commit, { dependency_of: session })`). One dependency per session-end; downstream commits add their own.
+- **Empty-history repo coverage** (#32) — planner spec asserts that a `git init`-ed repo emits the full Space scaffold (4 folders, 5 Doc pages) but no commit tasks, no per-sprint Lists, no truncation warning. Runbook entry added.
+- **Host bind-mount for server-side git extraction** (#27) — `docker-compose.yml` mounts `${CUP_HOST_MOUNT:-${HOME}}` read-only into the service container so `git-history.extractor` can reach repos by their host paths. Dockerfile installs `git` + sets `safe.directory='*'`.
+
+### Fixed (Sessions 6–8)
+
+- **Lifecycle status writes 400'd with "Status not found"** (#25) — ClickUp v2 silently ignores `statuses` on `createSpace`, `PUT /space`, and `PUT /list`, so freshly-created Spaces always have the default 2-status workflow regardless of what the planner emits. Added `mapInlineStatus(name)` that coerces the planned 7-status names down to `to do` / `complete` when `template_status='inline-fallback'`. Approve/reopen endpoints fixed in #26.
+- **`Cannot read properties of null (reading 'toLowerCase')` on listSpaces** (#24) — ClickUp returns spaces with `name=null`; added defensive coalesce.
+- **`createSpace` payload now includes `statuses`** (#23) — empirically confirmed CU silently ignores it but the field is preserved for the day they fix it; the same code path also `PUT`s the full Space payload on the post-create status replay so existing config isn't dropped.
+- **`listDocPages` v3 response is an array, not `{pages: [...]}`** (#29) — wrapper now accepts both shapes; previously a silent no-op on the Changelog append path.
+- **BullMQ rejects `:` in jobId** (#27) — sanitized in `QueueService.addJob` (replace `:` → `_`); upstream callers compose `backfill:<uuid>`.
+- **`pre_remove` backup 404 noise on per-repo Spaces** (#30) — `BackupService.take` now skips the legacy `getFolder` probe when `project.clickup_folder_id` is null and stubs the snapshot's folder block with the project's display name.
+
 #### Earlier work
 
 - **OAuth bootstrap** (`scripts/oauth-bootstrap.sh` + `oauth-bootstrap.py`) — one-shot browser flow that exchanges a ClickUp OAuth `client_id` + `client_secret` for an access token and writes it into `.env`. Lets users whose accounts disallow personal API tokens still run the tracker. Auto-detects the workspace ID via `/api/v2/team`.
