@@ -210,8 +210,13 @@ export class SyncService implements OnModuleInit {
 			return;
 		}
 
-		const actions: Array<{ kind: string; task_id?: string; reason?: string }> =
-			[];
+		const actions: Array<{
+			kind: string;
+			task_id?: string;
+			reason?: string;
+			from?: string;
+			to?: string;
+		}> = [];
 
 		// Per-repo Space model: one task per session_id in the Agent Sessions
 		// List, comments per turn. Falls back to the legacy "overview" task
@@ -269,6 +274,40 @@ export class SyncService implements OnModuleInit {
 			}
 		}
 
+		// Plan §9 / Session 6: link the session task to the most recent commit
+		// task whose changed files overlap with the session's files_touched.
+		// One dependency per session-end; downstream commits add their own.
+		if (
+			sessionTaskId &&
+			event.files_touched &&
+			event.files_touched.length > 0
+		) {
+			const commitTaskId = await this.findRecentCommitTaskByFiles(
+				project,
+				event.files_touched.map((f) => f.path),
+			);
+			if (commitTaskId && commitTaskId !== sessionTaskId) {
+				try {
+					await this.clickup.addDependency(
+						commitTaskId,
+						{ dependency_of: sessionTaskId },
+						creds.token,
+					);
+					actions.push({
+						kind: "dependency",
+						from: sessionTaskId,
+						to: commitTaskId,
+					});
+				} catch (err) {
+					// ClickUp 4xx when the dependency already exists — swallow per
+					// CARL rule #1 (idempotency); other failures get logged.
+					this.log.debug(
+						`addDependency session→commit (${sessionTaskId}→${commitTaskId}) failed: ${(err as Error).message}`,
+					);
+				}
+			}
+		}
+
 		if (actions.length === 0) {
 			actions.push({ kind: "skipped", reason: "no_session_target" });
 		}
@@ -291,6 +330,39 @@ export class SyncService implements OnModuleInit {
 			key,
 			value,
 		);
+	}
+
+	/**
+	 * Find the most recent commit task in this project whose changed-files set
+	 * overlaps with `paths`. Returns the ClickUp task_id (read from
+	 * task_index['commit:<sha>']), or undefined when nothing matches.
+	 *
+	 * Used to link Agent-Session tasks to the commit they most likely produced.
+	 * Conservative — single best match; a session that touches files spanning
+	 * multiple commits links to the latest one only.
+	 */
+	private async findRecentCommitTaskByFiles(
+		project: ProjectSyncRow,
+		paths: string[],
+	): Promise<string | undefined> {
+		if (!paths || paths.length === 0) return undefined;
+		const rows = await this.prisma.$queryRawUnsafe<
+			Array<{ commit_sha: string }>
+		>(
+			`SELECT g.commit_sha
+       FROM clickup_tracker.git_events g,
+            jsonb_array_elements(g.files_changed::jsonb) f
+       WHERE g.project_id = $1::uuid
+         AND f->>'path' = ANY($2::text[])
+       GROUP BY g.commit_sha, g.created_at
+       ORDER BY g.created_at DESC
+       LIMIT 1`,
+			project.id,
+			paths,
+		);
+		const sha = rows[0]?.commit_sha;
+		if (!sha) return undefined;
+		return project.task_index?.[`commit:${sha}`];
 	}
 
 	private async loadProject(projectId: string): Promise<ProjectSyncRow | null> {
@@ -321,7 +393,13 @@ export class SyncService implements OnModuleInit {
 
 	private async recordActions(
 		eventId: string,
-		actions: Array<{ kind: string; task_id?: string; reason?: string }>,
+		actions: Array<{
+			kind: string;
+			task_id?: string;
+			reason?: string;
+			from?: string;
+			to?: string;
+		}>,
 	): Promise<void> {
 		await this.prisma.$executeRawUnsafe(
 			`UPDATE clickup_tracker.prompt_events
