@@ -1,11 +1,11 @@
 ---
-description: Register the current repo with the clickup-tracker daemon. Creates Folder + 3 Lists in ClickUp.
+description: Register the current repo with the clickup-tracker daemon. Creates a per-repo ClickUp Space asynchronously (full agency-style structure with sprints, ADRs, Doc, native fields).
 argument-hint: "[path/to/repo]"
 ---
 
 Read `~/.config/clickup-tracker/config.json` for `base_url`, `default_org_id`, `auth_token`. If absent, tell the user to run `bash scripts/self-setup.sh` from the clickup-tracker-standalone repo first.
 
-Use `${1:-$(pwd)}` as `LOCAL_PATH`. Compose a registration body — extract the repo's display name from the path basename, optionally pull README/CHANGELOG content as the `extract` field. Then:
+Use `${1:-$(pwd)}` as `LOCAL_PATH`. Send a per-repo Space registration; the daemon runs the backfill orchestrator asynchronously.
 
 ```bash
 BASE=$(jq -r .base_url ~/.config/clickup-tracker/config.json)
@@ -15,7 +15,7 @@ LOCAL_PATH="${1:-$(pwd)}"
 DISPLAY_NAME=$(basename "$LOCAL_PATH")
 
 BODY=$(jq -nc --arg p "$LOCAL_PATH" --arg n "$DISPLAY_NAME" \
-  '{ localPath: $p, displayName: $n }')
+  '{ localPath: $p, displayName: $n, backfillMode: "space" }')
 
 curl -fsS -X POST \
   -H "Authorization: Bearer $AUTH" \
@@ -27,10 +27,12 @@ curl -fsS -X POST \
 
 Report from the JSON response:
 
-1. `folderUrl`
-2. `taskCount`
-3. `hookSecret` — surface ONCE, must be saved by the user; not re-readable.
-4. If `alreadyTracked: true`, just print the existing folderUrl (no bulk-create happened).
+1. `projectId` — save it.
+2. `hookSecret` — surface ONCE, must be saved by the user; not re-readable.
+3. `folderUrl` and `spaceUrl` may be empty initially — they're populated when the backfill finishes.
+4. If `alreadyTracked: true`, just print the existing `folderUrl` (no new project created).
+
+After the response lands, suggest the user run `/clickup-backfill-status` to watch the orchestrator complete.
 
 If `hookSecret` is non-empty, also install the post-commit hook. `$CUP_REPO_ROOT` should point at the local clickup-tracker-standalone clone (set in your shell rc, or pass the absolute path inline):
 

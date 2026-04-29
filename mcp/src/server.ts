@@ -60,7 +60,7 @@ const TOOL_DEFS = [
 	{
 		name: "clickup_register_project",
 		description:
-			"Register a local repo path with clickup-tracker. Creates a ClickUp Folder + 3 Lists. Returns hookSecret ONCE.",
+			"Register a local repo path with clickup-tracker. With backfillMode='space' (default) the daemon creates a full per-repo Space asynchronously (folders, sprint Lists, Doc, views, tasks); poll clickup_get_backfill_status until status='done'. Returns hookSecret ONCE; folderUrl/spaceUrl may be empty until backfill completes.",
 		inputSchema: {
 			type: "object",
 			required: ["localPath"],
@@ -72,6 +72,13 @@ const TOOL_DEFS = [
 				displayName: {
 					type: "string",
 					description: "Display name (defaults to basename of localPath).",
+				},
+				backfillMode: {
+					type: "string",
+					enum: ["space", "legacy"],
+					default: "space",
+					description:
+						"'space' (default) = async per-repo Space orchestrator. 'legacy' = sync 3-list flat Folder.",
 				},
 			},
 		},
@@ -89,7 +96,7 @@ const TOOL_DEFS = [
 	{
 		name: "clickup_sync_project",
 		description:
-			"Enqueue an immediate drift sync for a project (instead of waiting for the cron).",
+			"Enqueue an immediate drift sync for a project (instead of waiting for the cron). Doubles as a force-replan trigger when used after manual ClickUp UI changes.",
 		inputSchema: {
 			type: "object",
 			required: ["projectId"],
@@ -135,9 +142,83 @@ const TOOL_DEFS = [
 		},
 	},
 	{
+		name: "clickup_get_backfill_status",
+		description:
+			"Read the current backfill_state for a project. Returns { status, processed, total, last_sha?, started_at?, finished_at?, space_url?, folder_url?, error_message? }.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId"],
+			properties: { projectId: { type: "string" } },
+		},
+	},
+	{
+		name: "clickup_replan_project",
+		description:
+			"Re-run the per-repo Space orchestrator on an existing project. Idempotent (skips entities already in task_index); picks up new ADRs, doc refresh, new sprint Lists.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId"],
+			properties: { projectId: { type: "string" } },
+		},
+	},
+	{
+		name: "clickup_approve_task",
+		description:
+			"Comment + transition a ClickUp task to 'Done'. The taskId must be a ClickUp task id (read from task_index for git-keyed lookups).",
+		inputSchema: {
+			type: "object",
+			required: ["projectId", "taskId"],
+			properties: {
+				projectId: { type: "string" },
+				taskId: { type: "string" },
+				note: { type: "string", description: "Optional approval comment." },
+			},
+		},
+	},
+	{
+		name: "clickup_reopen_task",
+		description: "Comment + transition a ClickUp task to 'In Progress'.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId", "taskId"],
+			properties: {
+				projectId: { type: "string" },
+				taskId: { type: "string" },
+				note: { type: "string", description: "Optional reopen comment." },
+			},
+		},
+	},
+	{
+		name: "clickup_assign_task",
+		description:
+			"Assign a ClickUp task to a workspace member by email. Resolves via the cached members map; returns ok:false if the email is not in the workspace.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId", "taskId", "email"],
+			properties: {
+				projectId: { type: "string" },
+				taskId: { type: "string" },
+				email: { type: "string" },
+			},
+		},
+	},
+	{
+		name: "clickup_comment_task",
+		description: "Append a markdown comment to a ClickUp task.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId", "taskId", "markdown"],
+			properties: {
+				projectId: { type: "string" },
+				taskId: { type: "string" },
+				markdown: { type: "string" },
+			},
+		},
+	},
+	{
 		name: "clickup_get_status",
 		description:
-			"Composite health + project-list snapshot. If `cwd` is provided, also resolves which project (if any) owns it.",
+			"Composite health + project-list snapshot. If `cwd` is provided, also resolves which project (if any) owns it. Includes backfill_state per project.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -231,7 +312,12 @@ async function dispatch(
 				typeof args.displayName === "string" && args.displayName
 					? args.displayName
 					: localPath.split(/[\\/]/).filter(Boolean).pop() || localPath;
-			return http("POST", "/projects", { localPath, displayName });
+			const backfillMode = args.backfillMode === "legacy" ? "legacy" : "space";
+			return http("POST", "/projects", {
+				localPath,
+				displayName,
+				backfillMode,
+			});
 		}
 
 		case "clickup_resolve_project": {
@@ -257,6 +343,56 @@ async function dispatch(
 			const body: Record<string, unknown> = { backupId, mode };
 			if (mode === "replace") body.confirm = Boolean(args.confirm);
 			return http("POST", `/projects/${projectId}/restore`, body);
+		}
+
+		case "clickup_get_backfill_status":
+			return http("GET", `/projects/${requireId(args)}/backfill`);
+
+		case "clickup_replan_project":
+			return http("POST", `/projects/${requireId(args)}/replan`);
+
+		case "clickup_approve_task": {
+			const projectId = requireId(args);
+			const taskId = requireTaskId(args);
+			const body: Record<string, unknown> = {};
+			if (typeof args.note === "string" && args.note) body.note = args.note;
+			return http(
+				"POST",
+				`/projects/${projectId}/tasks/${taskId}/approve`,
+				body,
+			);
+		}
+
+		case "clickup_reopen_task": {
+			const projectId = requireId(args);
+			const taskId = requireTaskId(args);
+			const body: Record<string, unknown> = {};
+			if (typeof args.note === "string" && args.note) body.note = args.note;
+			return http(
+				"POST",
+				`/projects/${projectId}/tasks/${taskId}/reopen`,
+				body,
+			);
+		}
+
+		case "clickup_assign_task": {
+			const projectId = requireId(args);
+			const taskId = requireTaskId(args);
+			const email = String(args.email ?? "");
+			if (!email) throw new Error("email is required");
+			return http("POST", `/projects/${projectId}/tasks/${taskId}/assign`, {
+				email,
+			});
+		}
+
+		case "clickup_comment_task": {
+			const projectId = requireId(args);
+			const taskId = requireTaskId(args);
+			const markdown = String(args.markdown ?? "");
+			if (!markdown) throw new Error("markdown is required");
+			return http("POST", `/projects/${projectId}/tasks/${taskId}/comment`, {
+				markdown,
+			});
 		}
 
 		case "clickup_get_status": {
@@ -285,6 +421,12 @@ async function dispatch(
 function requireId(args: Record<string, unknown>): string {
 	const id = String(args.projectId ?? "");
 	if (!id) throw new Error("projectId is required");
+	return id;
+}
+
+function requireTaskId(args: Record<string, unknown>): string {
+	const id = String(args.taskId ?? "");
+	if (!id) throw new Error("taskId is required");
 	return id;
 }
 
