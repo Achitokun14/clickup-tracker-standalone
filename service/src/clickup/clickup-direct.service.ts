@@ -146,9 +146,10 @@ export class ClickUpDirectService {
 		options?: {
 			features?: Record<string, unknown>;
 			multiple_assignees?: boolean;
+			statuses?: ClickUpStatus[];
 		},
 	): Promise<ClickUpSpace> {
-		return this.fetchV2<ClickUpSpace>(`/team/${teamId}/space`, token, "POST", {
+		const body: Record<string, unknown> = {
 			name,
 			multiple_assignees: options?.multiple_assignees ?? true,
 			features: options?.features ?? {
@@ -168,19 +169,42 @@ export class ClickUpDirectService {
 				points: { enabled: true },
 				milestones: { enabled: true },
 			},
-		});
+		};
+		if (options?.statuses && options.statuses.length > 0) {
+			body.statuses = options.statuses;
+		}
+		return this.fetchV2<ClickUpSpace>(
+			`/team/${teamId}/space`,
+			token,
+			"POST",
+			body,
+		);
 	}
 
 	/**
-	 * Replace the cascading status set on a Space. Each child Folder/List
-	 * inherits unless it has an explicit override (see setListStatuses).
+	 * Replace the cascading status set on a Space. ClickUp v2 PUT /space
+	 * silently ignores `statuses` unless the full Space payload is replayed
+	 * (verified empirically — same no-op pattern as PUT /folder {archived}).
+	 * Always re-fetch the Space first and merge name + multiple_assignees +
+	 * features into the PUT body alongside the new statuses.
 	 */
 	async setSpaceStatuses(
 		spaceId: string,
 		statuses: ClickUpStatus[],
 		token: string,
 	): Promise<void> {
-		await this.fetchV2(`/space/${spaceId}`, token, "PUT", { statuses });
+		const space = await this.fetchV2<
+			ClickUpSpace & {
+				multiple_assignees?: boolean;
+				features?: Record<string, unknown>;
+			}
+		>(`/space/${spaceId}`, token);
+		await this.fetchV2(`/space/${spaceId}`, token, "PUT", {
+			name: space.name,
+			multiple_assignees: space.multiple_assignees ?? true,
+			features: space.features ?? {},
+			statuses,
+		});
 	}
 
 	// ---------- folders ----------
