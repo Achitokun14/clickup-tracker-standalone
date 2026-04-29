@@ -172,6 +172,63 @@ describe("SyncService — clickup_inbound handler", () => {
 		expect(projects[0].last_seen_status_changes.length).toBe(0);
 	});
 
+	it("findRecentCommitTaskByFiles returns the task_id of the latest overlapping commit", async () => {
+		const project = {
+			id: "PROJ1",
+			task_index: { "commit:abc123": "TASK_FOR_ABC" },
+		} as any;
+		const prisma = {
+			$queryRawUnsafe: jest.fn(async (_sql: string, ..._params: unknown[]) => [
+				{ commit_sha: "abc123" },
+			]),
+		} as any;
+		const svc = new SyncService(
+			new FakeQueue() as any,
+			prisma,
+			new FakeCredentials() as any,
+			new FakeClickUp() as any,
+		);
+		const result = await (svc as any).findRecentCommitTaskByFiles(project, [
+			"src/index.ts",
+		]);
+		expect(result).toBe("TASK_FOR_ABC");
+		// Confirm SQL targets git_events + uses ANY($2::text[]) on file paths.
+		const sql = prisma.$queryRawUnsafe.mock.calls[0][0] as string;
+		expect(sql).toContain("clickup_tracker.git_events");
+		expect(sql).toContain("ANY($2::text[])");
+		expect(prisma.$queryRawUnsafe.mock.calls[0][2]).toEqual(["src/index.ts"]);
+	});
+
+	it("findRecentCommitTaskByFiles returns undefined when no commit matches", async () => {
+		const project = { id: "P", task_index: {} } as any;
+		const prisma = { $queryRawUnsafe: jest.fn(async () => []) } as any;
+		const svc = new SyncService(
+			new FakeQueue() as any,
+			prisma,
+			new FakeCredentials() as any,
+			new FakeClickUp() as any,
+		);
+		expect(
+			await (svc as any).findRecentCommitTaskByFiles(project, ["x.ts"]),
+		).toBeUndefined();
+	});
+
+	it("findRecentCommitTaskByFiles short-circuits on empty paths (no SQL)", async () => {
+		const prisma = { $queryRawUnsafe: jest.fn() } as any;
+		const svc = new SyncService(
+			new FakeQueue() as any,
+			prisma,
+			new FakeCredentials() as any,
+			new FakeClickUp() as any,
+		);
+		const out = await (svc as any).findRecentCommitTaskByFiles(
+			{ id: "P", task_index: {} },
+			[],
+		);
+		expect(out).toBeUndefined();
+		expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+	});
+
 	it("git_drift handler is a no-op aside from touchLastSync", async () => {
 		const prisma = new FakePrisma([], []);
 		const svc = new SyncService(
