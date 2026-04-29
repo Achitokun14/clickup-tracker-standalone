@@ -99,8 +99,10 @@ if [[ $INSTALL_CLAUDE -eq 1 ]]; then
       .hooks //= {} |
       .hooks.Stop //= [] |
       .hooks.UserPromptSubmit //= [] |
-      (if any(.hooks.Stop[]; .command == $s) then . else .hooks.Stop += [{command: $s}] end) |
-      (if any(.hooks.UserPromptSubmit[]; .command == $p) then . else .hooks.UserPromptSubmit += [{command: $p}] end)
+      (if any(.hooks.Stop[]?; (.hooks // []) | any(.command == $s))
+         then . else .hooks.Stop += [{hooks: [{type: "command", command: $s}]}] end) |
+      (if any(.hooks.UserPromptSubmit[]?; (.hooks // []) | any(.command == $p))
+         then . else .hooks.UserPromptSubmit += [{hooks: [{type: "command", command: $p}]}] end)
     ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
     echo "✓ patched $SETTINGS (idempotent)"
   else
