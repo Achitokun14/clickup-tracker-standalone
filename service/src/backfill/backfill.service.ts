@@ -1,0 +1,683 @@
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import type { Job } from "bullmq";
+import {
+	type ClickUpStatus,
+	ClickUpDirectService,
+} from "../clickup/clickup-direct.service";
+import { CredentialsService } from "../credentials/credentials.service";
+import { GitHistoryExtractor } from "../extractors/git-history.extractor";
+import { RepoExtractExtractor } from "../extractors/repo-extract.extractor";
+import { planSpace } from "../bulk/hierarchy";
+import type {
+	PlannedSpaceTask,
+	RepoEntry,
+	SpaceFolderPlan,
+	SpacePlan,
+} from "../bulk/types";
+import { PrismaService } from "../prisma/prisma.service";
+import { QueueService } from "../queue/queue.service";
+
+const QUEUE_NAME = "cup-backfill";
+
+interface BackfillJobPayload {
+	projectId: string;
+}
+
+interface BackfillProjectRow {
+	id: string;
+	organisation_id: string;
+	local_path: string;
+	display_name: string;
+	clickup_team_id: string;
+	clickup_space_id: string | null;
+	clickup_folder_id: string | null;
+	clickup_doc_id: string | null;
+	list_ids: Record<string, string>;
+	sprint_lists: Record<string, string>;
+	task_index: Record<string, string>;
+	backfill_state: BackfillState;
+	scope_config: { mode: string; paths?: string[] };
+	git_remote_url: string | null;
+	git_default_branch: string | null;
+}
+
+export interface BackfillState {
+	status: "pending" | "queued" | "running" | "done" | "failed";
+	processed?: number;
+	total?: number;
+	last_sha?: string | null;
+	last_list?: string | null;
+	started_at?: string | null;
+	finished_at?: string | null;
+	error_message?: string | null;
+	space_url?: string | null;
+	folder_url?: string | null;
+}
+
+interface MemberCacheRow {
+	clickup_team_id: string;
+	members_cache: Record<string, number>;
+	members_cached_at: Date | null;
+}
+
+const MEMBER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Resumable, idempotent per-repo Space backfill orchestrator. Reads a fresh
+ * server-side extract + git history from the local repo, runs `planSpace()`,
+ * and walks the resulting `SpacePlan` against ClickUp via the (rate-limited)
+ * direct service.
+ *
+ * Idempotency is enforced via `projects.task_index` — every entity write
+ * skips when the key already maps to a ClickUp id. After every Sprint List
+ * we checkpoint `backfill_state.last_list` so a crashed worker can resume.
+ *
+ * No ClickUp UI walkthrough required: planner emits a complete SpacePlan
+ * with native fields populated; custom fields are Phase 2 only.
+ */
+@Injectable()
+export class BackfillService implements OnModuleInit {
+	private readonly log = new Logger(BackfillService.name);
+
+	constructor(
+		private readonly queue: QueueService,
+		private readonly prisma: PrismaService,
+		private readonly credentials: CredentialsService,
+		private readonly clickup: ClickUpDirectService,
+		private readonly gitHistory: GitHistoryExtractor,
+		private readonly repoExtract: RepoExtractExtractor,
+	) {}
+
+	onModuleInit(): void {
+		this.queue.registerQueue(QUEUE_NAME, (job) => this.handle(job));
+	}
+
+	/** Enqueue a backfill for a project. Idempotent on jobId. */
+	async enqueue(projectId: string): Promise<string> {
+		const jobId = `backfill:${projectId}`;
+		await this.queue.addJob(QUEUE_NAME, { projectId }, { jobId, attempts: 1 });
+		return jobId;
+	}
+
+	private async handle(job: Job): Promise<void> {
+		const { projectId } = job.data as BackfillJobPayload;
+		try {
+			await this.runFor(projectId);
+		} catch (err) {
+			this.log.error(`backfill ${projectId} failed: ${(err as Error).message}`);
+			await this.persistState(projectId, {
+				status: "failed",
+				error_message: (err as Error).message,
+				finished_at: new Date().toISOString(),
+			});
+			throw err;
+		}
+	}
+
+	/**
+	 * Public entry point. Runs the orchestrator end-to-end against the project.
+	 * Safe to call again — every step checks `task_index` / existing
+	 * Space/Folder/List ids before mutating.
+	 */
+	async runFor(projectId: string): Promise<BackfillState> {
+		const project = await this.loadProject(projectId);
+		if (!project) {
+			throw new Error(`project ${projectId} not found`);
+		}
+
+		await this.persistState(projectId, {
+			status: "running",
+			started_at: project.backfill_state.started_at ?? new Date().toISOString(),
+			error_message: null,
+		});
+
+		const creds = await this.credentials.forOrg(project.organisation_id);
+
+		// Step 1 — fresh extract + history from disk.
+		const [extract, history] = await Promise.all([
+			this.repoExtract.extract(project.local_path),
+			this.gitHistory.extract(project.local_path),
+		]);
+
+		const repo: RepoEntry = {
+			path: project.local_path,
+			name: project.display_name,
+			displayName: project.display_name,
+			stack: "Unknown",
+			hasReadme: !!extract.readme,
+			hasChangelog: extract.changelogEntries.length > 0,
+			stateFiles: [],
+			isBackup: false,
+			excluded: false,
+			gitRemoteUrl: project.git_remote_url ?? history.remote.url ?? undefined,
+		};
+
+		const plan = planSpace(repo, extract, history);
+
+		// Step 2 — refresh members cache if stale.
+		const members = await this.ensureMembers(creds.team_id, creds.token);
+
+		// Step 3 — Space.
+		const spaceId = await this.ensureSpace(project, plan, creds.token);
+
+		// Step 4 — Space-level statuses.
+		await this.safeSetStatuses(spaceId, plan.statuses, creds.token);
+
+		// Step 5 — pre-create tags.
+		await this.ensureTags(spaceId, plan.tags, creds.token);
+
+		// Step 6 — folders + lists (static + sprint lists).
+		const listIdByKey = await this.ensureFoldersAndLists(
+			project,
+			spaceId,
+			plan.folders,
+			creds.token,
+		);
+
+		// Step 7 — Doc + pages (best-effort; non-fatal if v3 path rejects).
+		await this.ensureDoc(project, spaceId, creds.team_id, plan, creds.token);
+
+		// Step 8 — default views per List (best-effort; non-fatal).
+		await this.ensureViews(plan, listIdByKey, creds.token);
+
+		// Step 9 — tasks.
+		const totalTasks = plan.tasks.length;
+		const taskIndex = { ...project.task_index };
+		let processed = 0;
+		const seenLists = new Set<string>();
+
+		for (const task of plan.tasks) {
+			const listId = listIdByKey[task.listKey];
+			if (!listId) {
+				this.log.warn(
+					`task ${task.key} → list "${task.listKey}" not provisioned; skipping`,
+				);
+				processed++;
+				continue;
+			}
+			if (taskIndex[task.key]) {
+				processed++;
+				continue;
+			}
+			try {
+				const created = await this.clickup.createTask(
+					listId,
+					this.toCreateBody(task, members, task.parentKey, taskIndex),
+					creds.token,
+				);
+				taskIndex[task.key] = created.id;
+
+				if (task.comments?.length) {
+					for (const c of task.comments) {
+						try {
+							await this.clickup.addComment(created.id, c, creds.token);
+						} catch (err) {
+							this.log.debug(
+								`comment on ${created.id} failed: ${(err as Error).message}`,
+							);
+						}
+					}
+				}
+			} catch (err) {
+				this.log.warn(
+					`createTask ${task.key} failed: ${(err as Error).message}`,
+				);
+			}
+			processed++;
+
+			// Checkpoint after every Sprint List or every 25 tasks, whichever first.
+			if (task.listKey.startsWith("sprint:")) {
+				if (!seenLists.has(task.listKey)) {
+					seenLists.add(task.listKey);
+					await this.persistTaskIndex(projectId, taskIndex);
+					await this.persistState(projectId, {
+						status: "running",
+						processed,
+						total: totalTasks,
+						last_sha: extractCommitSha(task.key),
+						last_list: task.listKey,
+						started_at: project.backfill_state.started_at ?? undefined,
+					});
+				}
+			} else if (processed % 25 === 0) {
+				await this.persistTaskIndex(projectId, taskIndex);
+				await this.persistState(projectId, {
+					status: "running",
+					processed,
+					total: totalTasks,
+				});
+			}
+		}
+
+		await this.persistTaskIndex(projectId, taskIndex);
+
+		// Step 10 — assignee resolution for commit tasks.
+		await this.assignAuthors(
+			plan,
+			listIdByKey,
+			taskIndex,
+			members,
+			creds.token,
+		);
+
+		// Step 11 — finalise.
+		const folderUrl = this.firstFolderUrl(creds.team_id, project, listIdByKey);
+		const spaceUrl = `https://app.clickup.com/${creds.team_id}/v/s/${spaceId}`;
+
+		const finalState: BackfillState = {
+			status: "done",
+			processed: totalTasks,
+			total: totalTasks,
+			finished_at: new Date().toISOString(),
+			started_at: project.backfill_state.started_at ?? undefined,
+			folder_url: folderUrl,
+			space_url: spaceUrl,
+		};
+		await this.persistState(projectId, finalState);
+		this.log.log(
+			`backfill ${projectId} done: ${totalTasks} tasks across ${Object.keys(listIdByKey).length} lists`,
+		);
+		return finalState;
+	}
+
+	// ── orchestrator steps ────────────────────────────────────────
+
+	private async ensureSpace(
+		project: BackfillProjectRow,
+		plan: SpacePlan,
+		token: string,
+	): Promise<string> {
+		if (project.clickup_space_id) return project.clickup_space_id;
+		const spaces = await this.clickup.listSpaces(
+			project.clickup_team_id,
+			token,
+		);
+		const existing = spaces.find(
+			(s) => s.name.toLowerCase() === plan.spaceName.toLowerCase(),
+		);
+		const space = existing
+			? existing
+			: await this.clickup.createSpace(
+					project.clickup_team_id,
+					plan.spaceName,
+					token,
+					{
+						features: plan.features,
+						multiple_assignees: plan.multipleAssignees,
+					},
+				);
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects SET clickup_space_id = $1, updated_at = NOW() WHERE id = $2::uuid`,
+			space.id,
+			project.id,
+		);
+		return space.id;
+	}
+
+	private async safeSetStatuses(
+		spaceId: string,
+		statuses: {
+			status: string;
+			color?: string;
+			type?: string;
+			orderindex?: number;
+		}[],
+		token: string,
+	): Promise<void> {
+		try {
+			await this.clickup.setSpaceStatuses(
+				spaceId,
+				statuses as ClickUpStatus[],
+				token,
+			);
+		} catch (err) {
+			this.log.warn(`setSpaceStatuses failed: ${(err as Error).message}`);
+		}
+	}
+
+	private async ensureTags(
+		spaceId: string,
+		want: string[],
+		token: string,
+	): Promise<void> {
+		let existing: Array<{ name: string }> = [];
+		try {
+			existing = await this.clickup.listSpaceTags(spaceId, token);
+		} catch (err) {
+			this.log.warn(`listSpaceTags failed: ${(err as Error).message}`);
+			return;
+		}
+		const have = new Set(existing.map((t) => t.name.toLowerCase()));
+		for (const name of want) {
+			if (have.has(name.toLowerCase())) continue;
+			try {
+				await this.clickup.createSpaceTag(spaceId, name, token);
+			} catch (err) {
+				this.log.debug(
+					`createSpaceTag(${name}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	private async ensureFoldersAndLists(
+		project: BackfillProjectRow,
+		spaceId: string,
+		folders: SpaceFolderPlan[],
+		token: string,
+	): Promise<Record<string, string>> {
+		const listIdByKey: Record<string, string> = { ...project.list_ids };
+		// Merge sprint_lists into the same map for lookup.
+		for (const [key, id] of Object.entries(project.sprint_lists ?? {})) {
+			listIdByKey[`sprint:${key}`] = id;
+		}
+
+		const existingFolders = await this.clickup.listFolders(spaceId, token);
+		let firstFolderId: string | null = project.clickup_folder_id;
+
+		for (const folder of folders) {
+			let existingFolder = existingFolders.find((f) => f.name === folder.name);
+			if (!existingFolder) {
+				existingFolder = await this.clickup.createFolder(
+					spaceId,
+					folder.name,
+					token,
+				);
+			}
+			if (!firstFolderId) firstFolderId = existingFolder.id;
+
+			const existingLists = await this.clickup.listListsInFolder(
+				existingFolder.id,
+				token,
+			);
+			for (const list of folder.lists) {
+				const wantName = list.name;
+				let match = existingLists.find((l) => l.name === wantName);
+				if (!match) {
+					match = await this.clickup.createListInFolder(
+						existingFolder.id,
+						wantName,
+						token,
+					);
+				}
+				listIdByKey[list.key] = match.id;
+				if (list.statusOverrides && list.statusOverrides.length > 0) {
+					try {
+						await this.clickup.setListStatuses(
+							match.id,
+							list.statusOverrides as ClickUpStatus[],
+							token,
+						);
+					} catch (err) {
+						this.log.debug(
+							`setListStatuses(${match.id}) failed: ${(err as Error).message}`,
+						);
+					}
+				}
+			}
+		}
+
+		// Persist resolved ids back to the project row.
+		const sprintLists: Record<string, string> = {};
+		const flatListIds: Record<string, string> = {};
+		for (const [key, id] of Object.entries(listIdByKey)) {
+			if (key.startsWith("sprint:")) {
+				sprintLists[key.slice("sprint:".length)] = id;
+			} else {
+				flatListIds[key] = id;
+			}
+		}
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects SET
+        clickup_folder_id = COALESCE(clickup_folder_id, $1),
+        list_ids = $2::jsonb,
+        sprint_lists = $3::jsonb,
+        updated_at = NOW()
+      WHERE id = $4::uuid`,
+			firstFolderId,
+			JSON.stringify(flatListIds),
+			JSON.stringify(sprintLists),
+			project.id,
+		);
+		return listIdByKey;
+	}
+
+	private async ensureDoc(
+		project: BackfillProjectRow,
+		spaceId: string,
+		teamId: string,
+		plan: SpacePlan,
+		token: string,
+	): Promise<void> {
+		if (project.clickup_doc_id) return;
+		try {
+			const doc = await this.clickup.createDoc(
+				teamId,
+				{
+					name: plan.doc.name,
+					parent: { id: spaceId, type: 4 },
+					visibility: "PRIVATE",
+					create_page: false,
+				},
+				token,
+			);
+			for (const page of plan.doc.pages) {
+				try {
+					await this.clickup.createDocPage(
+						teamId,
+						doc.id,
+						{ name: page.name, content: page.markdown },
+						token,
+					);
+				} catch (err) {
+					this.log.debug(
+						`createDocPage(${page.name}) failed: ${(err as Error).message}`,
+					);
+				}
+			}
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects SET clickup_doc_id = $1, updated_at = NOW() WHERE id = $2::uuid`,
+				doc.id,
+				project.id,
+			);
+		} catch (err) {
+			this.log.warn(`createDoc failed: ${(err as Error).message}`);
+		}
+	}
+
+	private async ensureViews(
+		plan: SpacePlan,
+		listIdByKey: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		for (const view of plan.views) {
+			const listId = listIdByKey[view.listKey];
+			if (!listId) continue;
+			try {
+				await this.clickup.createListView(
+					listId,
+					{
+						name: view.name,
+						type: view.type,
+						grouping: view.grouping,
+						sorting: view.sorting,
+						filters: view.filters,
+					},
+					token,
+				);
+			} catch (err) {
+				this.log.debug(
+					`createListView(${view.name}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	private async assignAuthors(
+		plan: SpacePlan,
+		listIdByKey: Record<string, string>,
+		taskIndex: Record<string, string>,
+		members: Record<string, number>,
+		token: string,
+	): Promise<void> {
+		for (const task of plan.tasks) {
+			if (!task.assigneeEmails?.length) continue;
+			const taskId = taskIndex[task.key];
+			if (!taskId) continue;
+			const userIds = task.assigneeEmails
+				.map((e) => members[e.toLowerCase()])
+				.filter((id): id is number => typeof id === "number");
+			if (userIds.length === 0) continue;
+			try {
+				await this.clickup.assignTask(taskId, userIds, [], token);
+			} catch (err) {
+				this.log.debug(
+					`assignTask(${taskId}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	private async ensureMembers(
+		teamId: string,
+		token: string,
+	): Promise<Record<string, number>> {
+		const rows = await this.prisma.$queryRawUnsafe<MemberCacheRow[]>(
+			`SELECT clickup_team_id, members_cache, members_cached_at
+       FROM clickup_tracker.workspace_settings
+       WHERE clickup_team_id = $1`,
+			teamId,
+		);
+		const fresh =
+			rows[0]?.members_cached_at &&
+			Date.now() - new Date(rows[0].members_cached_at).getTime() <
+				MEMBER_CACHE_TTL_MS;
+		if (fresh) return rows[0].members_cache ?? {};
+
+		let members: Record<string, number> = {};
+		try {
+			const list = await this.clickup.listMembers(teamId, token);
+			for (const m of list) {
+				if (m.email) members[m.email.toLowerCase()] = m.id;
+			}
+		} catch (err) {
+			this.log.warn(`listMembers failed: ${(err as Error).message}`);
+		}
+
+		await this.prisma.$executeRawUnsafe(
+			`INSERT INTO clickup_tracker.workspace_settings
+        (clickup_team_id, members_cache, members_cached_at)
+      VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (clickup_team_id) DO UPDATE
+        SET members_cache = EXCLUDED.members_cache,
+            members_cached_at = EXCLUDED.members_cached_at,
+            updated_at = NOW()`,
+			teamId,
+			JSON.stringify(members),
+		);
+		return members;
+	}
+
+	// ── persistence helpers ───────────────────────────────────────
+
+	private async loadProject(
+		projectId: string,
+	): Promise<BackfillProjectRow | null> {
+		const rows = await this.prisma.$queryRawUnsafe<BackfillProjectRow[]>(
+			`SELECT id, organisation_id, local_path, display_name,
+              clickup_team_id, clickup_space_id, clickup_folder_id,
+              clickup_doc_id, list_ids, sprint_lists, task_index,
+              backfill_state, scope_config, git_remote_url, git_default_branch
+       FROM clickup_tracker.projects
+       WHERE id = $1::uuid`,
+			projectId,
+		);
+		return rows[0] ?? null;
+	}
+
+	private async persistState(
+		projectId: string,
+		patch: Partial<BackfillState>,
+	): Promise<void> {
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects
+         SET backfill_state = backfill_state || $1::jsonb,
+             updated_at = NOW()
+       WHERE id = $2::uuid`,
+			JSON.stringify(patch),
+			projectId,
+		);
+	}
+
+	private async persistTaskIndex(
+		projectId: string,
+		taskIndex: Record<string, string>,
+	): Promise<void> {
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects
+         SET task_index = $1::jsonb, updated_at = NOW()
+       WHERE id = $2::uuid`,
+			JSON.stringify(taskIndex),
+			projectId,
+		);
+	}
+
+	private toCreateBody(
+		task: PlannedSpaceTask,
+		members: Record<string, number>,
+		parentKey: string | undefined,
+		taskIndex: Record<string, string>,
+	): import("../clickup/clickup-direct.service").CreateTaskBody {
+		const assignees =
+			task.assigneeEmails
+				?.map((e) => members[e.toLowerCase()])
+				.filter((id): id is number => typeof id === "number") ?? [];
+		const parentId = parentKey ? taskIndex[parentKey] : undefined;
+		return {
+			name: task.name,
+			markdown_content: task.markdown_content,
+			status: task.status,
+			tags: task.tags,
+			priority: task.priority,
+			start_date: task.startDateMs,
+			due_date: task.dueDateMs,
+			points: task.points,
+			time_estimate: task.timeEstimateMs,
+			assignees: assignees.length > 0 ? assignees : undefined,
+			parent: parentId,
+			notify_all: false,
+		};
+	}
+
+	private firstFolderUrl(
+		teamId: string,
+		project: BackfillProjectRow,
+		listIdByKey: Record<string, string>,
+	): string | null {
+		// Prefer the Active Sprint List view URL — that's where users want to land.
+		const activeId = listIdByKey["active_sprint"];
+		if (activeId) return `https://app.clickup.com/${teamId}/v/li/${activeId}`;
+		if (project.clickup_folder_id) {
+			return `https://app.clickup.com/${teamId}/v/f/${project.clickup_folder_id}`;
+		}
+		return null;
+	}
+
+	/** Public read of backfill state (used by the controller). */
+	async getState(projectId: string): Promise<BackfillState | null> {
+		const rows = await this.prisma.$queryRawUnsafe<
+			{
+				backfill_state: BackfillState;
+			}[]
+		>(
+			`SELECT backfill_state FROM clickup_tracker.projects WHERE id = $1::uuid`,
+			projectId,
+		);
+		return rows[0]?.backfill_state ?? null;
+	}
+}
+
+function extractCommitSha(taskKey: string): string | null {
+	const m = /^commit:([0-9a-f]{7,40})/.exec(taskKey);
+	return m ? m[1] : null;
+}

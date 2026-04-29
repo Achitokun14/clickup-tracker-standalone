@@ -18,4 +18,4 @@ curl -fsS -H "Authorization: Bearer $AUTH" -H "X-Organisation-Id: $ORG" \
 Report:
 
 - If `match` is null: this directory is not registered. Suggest `/clickup-add`.
-- If `match.id` is set: the ClickUp Folder URL (look up with `GET /projects/<id>`), `lastSyncedAt`, and the project status (`active` / `paused`).
+- If `match.id` is set: the ClickUp Folder URL (look up with `GET /projects/<id>`), `lastSyncedAt`, and the project status (`active` / `paused`). Also fetch `GET /projects/<id>/backfill` — if `status` is `queued` or `running`, surface the `processed/total` and remind the user that `/clickup-backfill-status <id>` polls live progress.

@@ -11,6 +11,7 @@ import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import { BackupService } from "../backup/backup.service";
 import { LIST_NAMES, planRepo } from "../bulk/hierarchy";
 import type { RepoEntry, RepoExtract, ListKey, RepoPlan } from "../bulk/types";
+import { QueueService } from "../queue/queue.service";
 import type {
 	RegisterProjectDto,
 	PatchProjectDto,
@@ -68,6 +69,7 @@ export class ProjectsService {
 		private readonly credentials: CredentialsService,
 		private readonly clickup: ClickUpDirectService,
 		private readonly backups: BackupService,
+		private readonly queue: QueueService,
 	) {}
 
 	/**
@@ -154,6 +156,12 @@ export class ProjectsService {
 				taskCount: Object.keys(row.task_index).length,
 				alreadyTracked: true,
 			};
+		}
+
+		// New per-repo Space mode: insert empty row, enqueue backfill, return.
+		// The orchestrator (BackfillService) walks planSpace() asynchronously.
+		if (dto.backfillMode === "space" && !dto.dryRun) {
+			return this.registerSpaceMode(orgId, dto);
 		}
 
 		if (dto.dryRun) {
@@ -313,6 +321,79 @@ export class ProjectsService {
 			listIds,
 			hookSecret,
 			taskCount: Object.keys(taskIndex).length,
+			alreadyTracked: false,
+		};
+	}
+
+	/**
+	 * Per-repo Space registration (Session 4): writes a placeholder project row
+	 * with backfill_state='queued', enqueues a cup-backfill job, and returns
+	 * immediately. Space, Folders, sprint Lists, Doc, views, and tasks are all
+	 * created asynchronously by BackfillService walking planSpace().
+	 */
+	private async registerSpaceMode(
+		orgId: string,
+		dto: RegisterProjectDto,
+	): Promise<RegisterResult> {
+		const creds = await this.credentials.forOrg(orgId);
+		const repo = this.repoFromDto(dto);
+		const hookSecret = randomBytes(32).toString("hex");
+
+		// Clear any soft-removed row at this (org, local_path).
+		await this.prisma.$executeRawUnsafe(
+			`DELETE FROM clickup_tracker.projects
+       WHERE organisation_id = $1::uuid
+         AND local_path = $2
+         AND status = 'removed'`,
+			orgId,
+			dto.localPath,
+		);
+
+		const inserted = await this.prisma.$queryRawUnsafe<ProjectRow[]>(
+			`INSERT INTO clickup_tracker.projects (
+        organisation_id, local_path, display_name, git_remote_url, scope_config,
+        clickup_team_id, clickup_space_id, clickup_folder_id, list_ids,
+        custom_field_ids, task_index, hook_secret, status, last_synced_at,
+        backfill_state
+      )
+      VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6, '', '', $7::jsonb,
+              $8::jsonb, $9::jsonb, $10, 'active', NOW(),
+              $11::jsonb)
+      RETURNING *`,
+			orgId,
+			dto.localPath,
+			repo.displayName,
+			dto.gitRemoteUrl ?? null,
+			JSON.stringify({
+				mode: dto.scopeMode ?? "root",
+				paths: dto.scopePaths ?? [],
+			}),
+			creds.team_id,
+			JSON.stringify({}),
+			JSON.stringify({}),
+			JSON.stringify({}),
+			hookSecret,
+			JSON.stringify({ status: "queued" }),
+		);
+
+		const row = inserted[0];
+		await this.queue.addJob(
+			"cup-backfill",
+			{ projectId: row.id },
+			{ jobId: `backfill:${row.id}`, attempts: 1 },
+		);
+
+		this.log.log(
+			`registered project ${row.id} (${repo.displayName}) — backfill queued`,
+		);
+		return {
+			projectId: row.id,
+			folderId: "",
+			folderUrl: "",
+			spaceId: "",
+			listIds: { overview: "", open_work: "", history: "" },
+			hookSecret,
+			taskCount: 0,
 			alreadyTracked: false,
 		};
 	}
