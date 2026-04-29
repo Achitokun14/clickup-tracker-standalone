@@ -58,6 +58,7 @@ export interface RegisterResult {
 	hookSecret: string; // returned ONCE
 	taskCount: number;
 	alreadyTracked: boolean;
+	scopeConfig?: { mode: string; paths?: string[] } | null;
 }
 
 @Injectable()
@@ -322,6 +323,7 @@ export class ProjectsService {
 			hookSecret,
 			taskCount: Object.keys(taskIndex).length,
 			alreadyTracked: false,
+			scopeConfig: row.scope_config,
 		};
 	}
 
@@ -395,6 +397,7 @@ export class ProjectsService {
 			hookSecret,
 			taskCount: 0,
 			alreadyTracked: false,
+			scopeConfig: row.scope_config,
 		};
 	}
 
