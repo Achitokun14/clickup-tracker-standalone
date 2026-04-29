@@ -62,6 +62,11 @@ interface MemberCacheRow {
 
 const MEMBER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+const TIME_ENTRIES_ENABLED =
+	(process.env.CUP_BACKFILL_TIME_ENTRIES || "").toLowerCase() === "on";
+const DEPENDENCIES_ENABLED =
+	(process.env.CUP_BACKFILL_DEPENDENCIES || "on").toLowerCase() !== "off";
+
 /**
  * Resumable, idempotent per-repo Space backfill orchestrator. Reads a fresh
  * server-side extract + git history from the local repo, runs `planSpace()`,
@@ -259,6 +264,27 @@ export class BackfillService implements OnModuleInit {
 			members,
 			creds.token,
 		);
+
+		// Step 10b — Time Entries (opt-in via CUP_BACKFILL_TIME_ENTRIES=on).
+		// One createTimeEntry per commit task using the planner's estimateMinutes
+		// fallback. Off by default because each entry consumes a write call and
+		// the cumulative cost on a 5000-commit cap is significant.
+		if (TIME_ENTRIES_ENABLED) {
+			await this.backfillTimeEntries(
+				plan,
+				taskIndex,
+				members,
+				creds.team_id,
+				creds.token,
+			);
+		}
+
+		// Step 10c — Dependencies between commit tasks and Agent Sessions tasks.
+		// Cheap heuristic: if a session task exists and shares files with a commit,
+		// link them. Default ON; toggle off via CUP_BACKFILL_DEPENDENCIES=off.
+		if (DEPENDENCIES_ENABLED) {
+			await this.linkSessionDependencies(plan, taskIndex, creds.token);
+		}
 
 		// Step 11 — finalise.
 		const folderUrl = this.firstFolderUrl(creds.team_id, project, listIdByKey);
@@ -538,6 +564,90 @@ export class BackfillService implements OnModuleInit {
 		}
 	}
 
+	// ── Time Entries (opt-in via CUP_BACKFILL_TIME_ENTRIES=on) ──
+
+	private async backfillTimeEntries(
+		plan: SpacePlan,
+		taskIndex: Record<string, string>,
+		members: Record<string, number>,
+		teamId: string,
+		token: string,
+	): Promise<void> {
+		for (const task of plan.tasks) {
+			if (!task.key.startsWith("commit:")) continue;
+			const taskId = taskIndex[task.key];
+			if (!taskId) continue;
+			if (!task.timeEstimateMs || !task.startDateMs) continue;
+			const assignee =
+				task.assigneeEmails
+					?.map((e) => members[e.toLowerCase()])
+					.find((id): id is number => typeof id === "number") ?? undefined;
+			try {
+				await this.clickup.createTimeEntry(
+					teamId,
+					{
+						tid: taskId,
+						start: task.startDateMs,
+						duration: task.timeEstimateMs,
+						description: `Backfilled by clickup-tracker (${task.key})`,
+						assignee,
+						billable: false,
+					},
+					token,
+				);
+			} catch (err) {
+				this.log.debug(
+					`createTimeEntry(${task.key}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	// ── Dependencies — commit ↔ session linkage ─────────────────
+
+	private async linkSessionDependencies(
+		plan: SpacePlan,
+		taskIndex: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		// Group commit tasks by their first changed file path's top-level dir.
+		// If any session task shares that prefix, link commit dependency_of session.
+		const commitsByPrefix = new Map<string, string[]>();
+		for (const task of plan.tasks) {
+			if (!task.key.startsWith("commit:")) continue;
+			const id = taskIndex[task.key];
+			if (!id) continue;
+			const prefix = extractTopDirFromName(task.name);
+			if (!prefix) continue;
+			const arr = commitsByPrefix.get(prefix) ?? [];
+			arr.push(id);
+			commitsByPrefix.set(prefix, arr);
+		}
+
+		for (const task of plan.tasks) {
+			if (!task.key.startsWith("session:")) continue;
+			const sessionId = taskIndex[task.key];
+			if (!sessionId) continue;
+			// Heuristic: link any commit prefix that appears in the session name.
+			for (const [prefix, commitIds] of commitsByPrefix) {
+				if (!task.name.toLowerCase().includes(prefix.toLowerCase())) continue;
+				for (const commitId of commitIds.slice(0, 5)) {
+					try {
+						await this.clickup.addDependency(
+							commitId,
+							{ dependency_of: sessionId },
+							token,
+						);
+					} catch (err) {
+						this.log.debug(
+							`addDependency(${commitId}↔${sessionId}) failed: ${(err as Error).message}`,
+						);
+					}
+				}
+			}
+		}
+	}
+
 	private async ensureMembers(
 		teamId: string,
 		token: string,
@@ -680,4 +790,17 @@ export class BackfillService implements OnModuleInit {
 function extractCommitSha(taskKey: string): string | null {
 	const m = /^commit:([0-9a-f]{7,40})/.exec(taskKey);
 	return m ? m[1] : null;
+}
+
+/** Extract the first scope/path-prefix token from a planned commit task name.
+ * Names look like "[2026-04-22] Feature(api): new endpoint" — scope is "api".
+ * Falls back to the second word if no `(scope)` is present. */
+function extractTopDirFromName(name: string): string | null {
+	const scope = /\(([^)]+)\)/.exec(name);
+	if (scope) return scope[1];
+	const words = name
+		.replace(/^\[[^\]]+\]\s*/, "")
+		.split(/[:\s]/)
+		.filter(Boolean);
+	return words[1] ?? null;
 }
