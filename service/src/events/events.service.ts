@@ -44,7 +44,8 @@ export type ResultingAction =
 			from_list_key?: string;
 			to_list_key: string;
 	  }
-	| { kind: "conflict_skipped"; task_id: string };
+	| { kind: "conflict_skipped"; task_id: string }
+	| { kind: "doc_append"; page_id: string };
 
 interface ProjectMin {
 	id: string;
@@ -62,6 +63,7 @@ interface ProjectMin {
 	git_remote_host: string | null;
 	git_remote_owner_repo: string | null;
 	template_status: string | null;
+	clickup_doc_id: string | null;
 }
 
 @Injectable()
@@ -384,6 +386,21 @@ export class EventsService {
 			);
 		}
 
+		// 5b. Append a one-paragraph summary to the Doc's Changelog page for
+		// default-branch commits. Best-effort, non-blocking — page lookup is
+		// memoised on project.task_index['doc_page:Changelog'].
+		if (this.isOnDefaultBranch(project, dto)) {
+			await this.tryAppendChangelogPage(
+				project,
+				creds.token,
+				creds.team_id,
+				planned.name,
+				dto.commit_sha,
+				cc.subject,
+				actions,
+			);
+		}
+
 		// 6. Merge-into-default detection — move the original branch task to the
 		// active sprint List + transition to Done.
 		if (commit.isMergeCommit && this.isOnDefaultBranch(project, dto)) {
@@ -539,6 +556,51 @@ export class EventsService {
 		actions.push({ kind: "comment", task_id: activeListId });
 	}
 
+	/**
+	 * Append a paragraph to the Space Doc's Changelog page on every commit
+	 * landing on the default branch. Best-effort and non-blocking —
+	 * lookup of the Changelog page id is memoised in task_index under
+	 * 'doc_page:Changelog' so we only listDocPages once per project.
+	 */
+	private async tryAppendChangelogPage(
+		project: ProjectMin,
+		token: string,
+		teamId: string,
+		taskName: string,
+		commitSha: string,
+		subject: string,
+		actions: ResultingAction[],
+	): Promise<void> {
+		const docId = project.clickup_doc_id;
+		if (!docId) return;
+		try {
+			let pageId = project.task_index["doc_page:Changelog"];
+			if (!pageId) {
+				const pages = await this.clickup.listDocPages(teamId, docId, token);
+				const found = pages.find((p) => p.name === "Changelog");
+				if (!found) return;
+				pageId = found.id;
+				await this.appendToTaskIndex(project.id, {
+					"doc_page:Changelog": pageId,
+				});
+				project.task_index["doc_page:Changelog"] = pageId;
+			}
+			const para =
+				`\n\n- **${commitSha.slice(0, 8)}** — ${taskName}` +
+				(subject && subject !== taskName ? `  \n  ${subject}` : "");
+			await this.clickup.updateDocPage(
+				teamId,
+				docId,
+				pageId,
+				{ content: para, content_edit_mode: "append" },
+				token,
+			);
+			actions.push({ kind: "doc_append", page_id: pageId });
+		} catch (err) {
+			this.log.debug(`changelog page append failed: ${(err as Error).message}`);
+		}
+	}
+
 	// ── helpers ─────────────────────────────────────────────────
 
 	private async loadProject(projectId: string): Promise<ProjectMin | null> {
@@ -551,7 +613,7 @@ export class EventsService {
               scope_config::jsonb AS scope_config,
               git_default_branch, git_remote_url,
               git_remote_host, git_remote_owner_repo,
-              template_status
+              template_status, clickup_doc_id
        FROM clickup_tracker.projects
        WHERE id = $1::uuid AND status <> 'removed'`,
 			projectId,
