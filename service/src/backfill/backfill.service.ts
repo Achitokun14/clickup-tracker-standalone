@@ -323,7 +323,7 @@ export class BackfillService implements OnModuleInit {
 			token,
 		);
 		const existing = spaces.find(
-			(s) => s.name.toLowerCase() === plan.spaceName.toLowerCase(),
+			(s) => (s.name ?? "").toLowerCase() === plan.spaceName.toLowerCase(),
 		);
 		const space = existing
 			? existing
@@ -378,7 +378,7 @@ export class BackfillService implements OnModuleInit {
 			this.log.warn(`listSpaceTags failed: ${(err as Error).message}`);
 			return;
 		}
-		const have = new Set(existing.map((t) => t.name.toLowerCase()));
+		const have = new Set(existing.map((t) => (t.name ?? "").toLowerCase()));
 		for (const name of want) {
 			if (have.has(name.toLowerCase())) continue;
 			try {
