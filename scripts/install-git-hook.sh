@@ -19,22 +19,32 @@ HOOK_SECRET=""
 # (e.g. https://example.com/api/v1/clickup-tracker).
 BASE="${CLICKUP_TRACKER_BASE_URL:-http://localhost:4020}"
 FORCE=0
+SCOPE_MODE="root"
+# Comma-separated relative paths (e.g. "service/,mcp/"). Trailing slash optional.
+SCOPE_PATHS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)         REPO="$2"; shift 2 ;;
     --project-id)   PROJECT_ID="$2"; shift 2 ;;
     --hook-secret)  HOOK_SECRET="$2"; shift 2 ;;
-    --base) BASE="$2"; shift 2 ;;
+    --base)         BASE="$2"; shift 2 ;;
+    --scope-mode)   SCOPE_MODE="$2"; shift 2 ;;
+    --scope-paths)  SCOPE_PATHS="$2"; shift 2 ;;
     --force)        FORCE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
 if [[ -z "$REPO" || -z "$PROJECT_ID" || -z "$HOOK_SECRET" ]]; then
-  echo "usage: $0 --repo <path> --project-id <uuid> --hook-secret <hex> [--base <url>] [--force]" >&2
+  echo "usage: $0 --repo <path> --project-id <uuid> --hook-secret <hex> [--base <url>] [--scope-mode root|subdir] [--scope-paths svc/,mcp/] [--force]" >&2
   echo "       --base defaults to \$CLICKUP_TRACKER_BASE_URL or http://localhost:4020" >&2
+  echo "       --scope-mode subdir + --scope-paths skips the POST early when no changed file matches" >&2
   exit 2
+fi
+
+if [[ "$SCOPE_MODE" == "subdir" && -z "$SCOPE_PATHS" ]]; then
+  echo "warning: --scope-mode subdir without --scope-paths is treated as pass-through (matches daemon behaviour)" >&2
 fi
 
 if [[ ! -d "$REPO/.git" ]]; then
@@ -63,6 +73,8 @@ set -euo pipefail
 PROJECT_ID="${PROJECT_ID}"
 HOOK_SECRET="${HOOK_SECRET}"
 BASE="${BASE}"
+SCOPE_MODE="${SCOPE_MODE}"
+SCOPE_PATHS="${SCOPE_PATHS}"
 
 sha=\$(git rev-parse HEAD)
 parent=\$(git rev-parse "\${sha}^" 2>/dev/null || echo "")
@@ -75,6 +87,28 @@ remote=\$(git remote get-url origin 2>/dev/null || echo "")
 
 # Files changed in this commit (path + status, no diff).
 files=\$(git diff-tree --no-commit-id --name-status -r "\${sha}" 2>/dev/null | awk '{ printf "{\"path\":\"%s\",\"status\":\"%s\"},\n", \$2, \$1 }' | sed 's/,\$//')
+
+# Client-side scope_config subdir filter — early-out so the daemon doesn't
+# even see commits that touch only out-of-scope paths. The daemon also
+# enforces this server-side (authoritative); this is just an optimization.
+if [[ "\$SCOPE_MODE" == "subdir" && -n "\$SCOPE_PATHS" ]]; then
+  changed_paths=\$(git diff-tree --no-commit-id --name-only -r "\${sha}" 2>/dev/null || true)
+  matched=0
+  IFS=',' read -ra _SCOPE_ARR <<< "\$SCOPE_PATHS"
+  for p in "\${_SCOPE_ARR[@]}"; do
+    p="\${p%/}/"  # ensure trailing slash
+    while IFS= read -r f; do
+      [[ -z "\$f" ]] && continue
+      if [[ "\$f/" == "\$p"* || "\$f" == "\${p%/}" ]]; then
+        matched=1; break
+      fi
+    done <<< "\$changed_paths"
+    [[ \$matched -eq 1 ]] && break
+  done
+  if [[ \$matched -eq 0 ]]; then
+    exit 0
+  fi
+fi
 
 # TODO/FIXME/XXX/HACK churn in this commit's diff.
 # POSIX-awk only (mawk/nawk/gawk/macOS awk all OK). Failures swallowed

@@ -43,3 +43,5 @@ bash "${CUP_REPO_ROOT:?set CUP_REPO_ROOT to the clickup-tracker-standalone repo 
   --hook-secret "<hookSecret from response>" \
   --base "$BASE"
 ```
+
+If the response's `scopeConfig.mode == "subdir"`, also pass `--scope-mode subdir --scope-paths "<comma-joined scopeConfig.paths>"` so the hook skips the POST entirely on commits that don't touch any tracked path. The daemon enforces the same filter authoritatively; the hook flag is just a faster early-out.
