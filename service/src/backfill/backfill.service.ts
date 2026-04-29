@@ -7,7 +7,7 @@ import {
 import { CredentialsService } from "../credentials/credentials.service";
 import { GitHistoryExtractor } from "../extractors/git-history.extractor";
 import { RepoExtractExtractor } from "../extractors/repo-extract.extractor";
-import { planSpace } from "../bulk/hierarchy";
+import { mapInlineStatus, planSpace } from "../bulk/hierarchy";
 import type {
 	PlannedSpaceTask,
 	RepoEntry,
@@ -43,6 +43,7 @@ interface BackfillProjectRow {
 	scope_config: { mode: string; paths?: string[] };
 	git_remote_url: string | null;
 	git_default_branch: string | null;
+	template_status: string | null;
 }
 
 export interface BackfillState {
@@ -211,7 +212,13 @@ export class BackfillService implements OnModuleInit {
 			try {
 				const created = await this.clickup.createTask(
 					listId,
-					this.toCreateBody(task, members, task.parentKey, taskIndex),
+					this.toCreateBody(
+						task,
+						members,
+						task.parentKey,
+						taskIndex,
+						project.template_status,
+					),
 					creds.token,
 				);
 				taskIndex[task.key] = created.id;
@@ -702,7 +709,8 @@ export class BackfillService implements OnModuleInit {
 			`SELECT id, organisation_id, local_path, display_name,
               clickup_team_id, clickup_space_id, clickup_folder_id,
               clickup_doc_id, list_ids, sprint_lists, task_index,
-              backfill_state, scope_config, git_remote_url, git_default_branch
+              backfill_state, scope_config, git_remote_url, git_default_branch,
+              template_status
        FROM clickup_tracker.projects
        WHERE id = $1::uuid`,
 			projectId,
@@ -757,16 +765,21 @@ export class BackfillService implements OnModuleInit {
 		members: Record<string, number>,
 		parentKey: string | undefined,
 		taskIndex: Record<string, string>,
+		templateStatus: string | null,
 	): import("../clickup/clickup-direct.service").CreateTaskBody {
 		const assignees =
 			task.assigneeEmails
 				?.map((e) => members[e.toLowerCase()])
 				.filter((id): id is number => typeof id === "number") ?? [];
 		const parentId = parentKey ? taskIndex[parentKey] : undefined;
+		const status =
+			templateStatus === "configured"
+				? task.status
+				: mapInlineStatus(task.status);
 		return {
 			name: task.name,
 			markdown_content: task.markdown_content,
-			status: task.status,
+			status,
 			tags: task.tags,
 			priority: task.priority,
 			start_date: task.startDateMs,

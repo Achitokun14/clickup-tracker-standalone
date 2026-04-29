@@ -4,7 +4,11 @@ import { CredentialsService } from "../credentials/credentials.service";
 import { eventsTotal } from "../metrics/registry";
 import { PrismaService } from "../prisma/prisma.service";
 import { SyncService } from "../sync/sync.service";
-import { planSpaceCommitTask, sprintListKey } from "../bulk/hierarchy";
+import {
+	mapInlineStatus,
+	planSpaceCommitTask,
+	sprintListKey,
+} from "../bulk/hierarchy";
 import type {
 	CommitRecord,
 	CommitFileChange,
@@ -57,6 +61,7 @@ interface ProjectMin {
 	git_remote_url: string | null;
 	git_remote_host: string | null;
 	git_remote_owner_repo: string | null;
+	template_status: string | null;
 }
 
 @Injectable()
@@ -323,13 +328,17 @@ export class EventsService {
 						: "open_work";
 
 		// 4. Create task with native fields.
+		const statusForCu =
+			project.template_status === "configured"
+				? planned.status
+				: mapInlineStatus(planned.status);
 		try {
 			const created = await this.clickup.createTask(
 				listId,
 				{
 					name: planned.name,
 					markdown_content: planned.markdown_content,
-					status: planned.status,
+					status: statusForCu,
 					tags: planned.tags,
 					priority: planned.priority,
 					start_date: planned.startDateMs,
@@ -541,7 +550,8 @@ export class EventsService {
               task_index::jsonb AS task_index,
               scope_config::jsonb AS scope_config,
               git_default_branch, git_remote_url,
-              git_remote_host, git_remote_owner_repo
+              git_remote_host, git_remote_owner_repo,
+              template_status
        FROM clickup_tracker.projects
        WHERE id = $1::uuid AND status <> 'removed'`,
 			projectId,
