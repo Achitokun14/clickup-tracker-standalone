@@ -216,6 +216,16 @@ const TOOL_DEFS = [
 		},
 	},
 	{
+		name: "clickup_mark_template_configured",
+		description:
+			"Flip a project's template_status to 'configured' after the manual ClickUp UI walkthrough that adds the 7-status workflow. From this point onward the daemon writes literal status names ('Done', 'In Review', etc.) instead of mapping down to 'to do' / 'complete'.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId"],
+			properties: { projectId: { type: "string" } },
+		},
+	},
+	{
 		name: "clickup_get_status",
 		description:
 			"Composite health + project-list snapshot. If `cwd` is provided, also resolves which project (if any) owns it. Includes backfill_state per project.",
@@ -394,6 +404,9 @@ async function dispatch(
 				markdown,
 			});
 		}
+
+		case "clickup_mark_template_configured":
+			return http("POST", `/projects/${requireId(args)}/template-configured`);
 
 		case "clickup_get_status": {
 			const [health, projects] = await Promise.all([
