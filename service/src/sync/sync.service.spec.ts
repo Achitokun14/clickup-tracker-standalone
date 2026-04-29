@@ -9,6 +9,7 @@ interface InboundRow {
 	event_type: string;
 	task_id: string | null;
 	payload: Record<string, unknown>;
+	processed_at?: Date | null;
 }
 
 interface ProjectRow {
