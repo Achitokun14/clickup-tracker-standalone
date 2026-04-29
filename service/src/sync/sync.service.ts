@@ -7,9 +7,30 @@ import { PrismaService } from "../prisma/prisma.service";
 import { QueueService } from "../queue/queue.service";
 
 interface SyncJobPayload {
-	projectId: string;
-	kind: "prompt" | "git_drift";
+	projectId?: string;
+	kind: "prompt" | "git_drift" | "clickup_inbound";
 	eventId?: string;
+	/** clickup_inbound only — set by ClickUpWebhooksController.ingest. */
+	teamId?: string;
+	/** clickup_inbound only — webhook payload's webhook_id (dedup key). */
+	webhookEventId?: string;
+}
+
+interface InboundEventRow {
+	id: string;
+	clickup_team_id: string;
+	webhook_event_id: string;
+	history_item_id: string | null;
+	event_type: string;
+	task_id: string | null;
+	payload: Record<string, unknown>;
+}
+
+interface ProjectByTaskRow {
+	id: string;
+	clickup_team_id: string;
+	task_index: Record<string, string>;
+	last_seen_status_changes: unknown[];
 }
 
 interface ProjectSyncRow {
@@ -54,7 +75,9 @@ export class SyncService implements OnModuleInit {
 	async enqueue(payload: SyncJobPayload): Promise<void> {
 		const jobId = payload.eventId
 			? `${payload.kind}:${payload.eventId}`
-			: `${payload.kind}:${payload.projectId}:${Date.now()}`;
+			: payload.kind === "clickup_inbound"
+				? `${payload.kind}:${payload.teamId}:${payload.webhookEventId}`
+				: `${payload.kind}:${payload.projectId}:${Date.now()}`;
 		await this.queue.addJob(QUEUE_NAME, payload, { jobId, attempts: 3 });
 	}
 
@@ -68,13 +91,96 @@ export class SyncService implements OnModuleInit {
 				// The daemon runs in Docker without bind-mounts of user repos, so it
 				// cannot shell out to `git log` for missed-commit replay. Real drift
 				// recovery happens via the post-commit hook + bidirectional ClickUp
-				// webhook (planned in PR-5). For now, just touch last_synced_at so
-				// the cron doesn't re-enqueue this project every 5 minutes.
-				await this.touchLastSync(payload.projectId);
+				// webhook. Just touch last_synced_at so the cron doesn't re-enqueue
+				// this project every 5 minutes.
+				if (payload.projectId) await this.touchLastSync(payload.projectId);
+			} else if (payload.kind === "clickup_inbound") {
+				await this.handleClickUpInbound(payload);
 			}
 		} finally {
 			stop();
 		}
+	}
+
+	// ── ClickUp inbound (Session 6) ─────────────────────────────
+
+	private async handleClickUpInbound(payload: SyncJobPayload): Promise<void> {
+		// Drain any unprocessed rows for this (team, webhook_event_id) tuple.
+		// In practice the controller writes one row per history_item, so we may
+		// have N rows to process per enqueue.
+		const rows = await this.prisma.$queryRawUnsafe<InboundEventRow[]>(
+			`SELECT id, clickup_team_id, webhook_event_id, history_item_id,
+              event_type, task_id, payload
+       FROM clickup_tracker.clickup_inbound_events
+       WHERE clickup_team_id = $1
+         AND webhook_event_id = $2
+         AND processed_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT 200`,
+			payload.teamId,
+			payload.webhookEventId,
+		);
+		if (rows.length === 0) return;
+
+		for (const row of rows) {
+			try {
+				await this.processInboundRow(row);
+				await this.prisma.$executeRawUnsafe(
+					`UPDATE clickup_tracker.clickup_inbound_events
+           SET processed_at = NOW()
+           WHERE id = $1::uuid`,
+					row.id,
+				);
+			} catch (err) {
+				this.log.warn(
+					`inbound ${row.id} (${row.event_type}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	private async processInboundRow(row: InboundEventRow): Promise<void> {
+		// Resolve project via reverse task_index lookup. ClickUp task ids are
+		// unique per workspace; we filter by team_id to scope the scan.
+		if (!row.task_id) return;
+		const projects = await this.prisma.$queryRawUnsafe<ProjectByTaskRow[]>(
+			`SELECT id, clickup_team_id, task_index, last_seen_status_changes
+       FROM clickup_tracker.projects
+       WHERE clickup_team_id = $1
+         AND status <> 'removed'`,
+			row.clickup_team_id,
+		);
+		const owning = projects.find((p) => {
+			for (const id of Object.values(p.task_index ?? {})) {
+				if (id === row.task_id) return true;
+			}
+			return false;
+		});
+		if (!owning) {
+			this.log.debug(
+				`inbound ${row.event_type} task=${row.task_id} — no owning project in team ${row.clickup_team_id}`,
+			);
+			return;
+		}
+
+		// Record into the rolling last_seen_status_changes log. Bound to 100
+		// entries (`#- '{100}'` removes index 100 once length exceeds it).
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects
+         SET last_seen_status_changes =
+            (COALESCE(last_seen_status_changes, '[]'::jsonb)
+              || jsonb_build_array($2::jsonb))
+            #- '{100}',
+             updated_at = NOW()
+       WHERE id = $1::uuid`,
+			owning.id,
+			JSON.stringify({
+				at: new Date().toISOString(),
+				task_id: row.task_id,
+				event: row.event_type,
+				history_item_id: row.history_item_id,
+			}),
+		);
 	}
 
 	private async handlePromptEvent(payload: SyncJobPayload): Promise<void> {
