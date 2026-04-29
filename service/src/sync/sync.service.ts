@@ -39,6 +39,8 @@ interface ProjectSyncRow {
 	display_name: string;
 	clickup_folder_id: string;
 	task_index: Record<string, string>;
+	list_ids: Record<string, string>;
+	template_status: string | null;
 }
 
 interface PromptEventRow {
@@ -208,34 +210,95 @@ export class SyncService implements OnModuleInit {
 			return;
 		}
 
-		const overviewId = project.task_index["overview"];
 		const actions: Array<{ kind: string; task_id?: string; reason?: string }> =
 			[];
 
-		if (overviewId && event.outcome_summary) {
+		// Per-repo Space model: one task per session_id in the Agent Sessions
+		// List, comments per turn. Falls back to the legacy "overview" task
+		// only when neither agent_sessions list nor session_id is available.
+		const sessionId = event.session_id;
+		const agentSessionsListId = project.list_ids?.["agent_sessions"];
+		let sessionTaskId: string | undefined;
+
+		if (sessionId && agentSessionsListId) {
+			const indexKey = `session:${sessionId}`;
+			sessionTaskId = project.task_index?.[indexKey];
+			if (!sessionTaskId) {
+				try {
+					const created = await this.clickup.createTask(
+						agentSessionsListId,
+						{
+							name: `[${(
+								event.created_at instanceof Date
+									? event.created_at.toISOString()
+									: String(event.created_at)
+							).slice(0, 10)}] Agent session ${sessionId.slice(0, 8)}`,
+							markdown_content: `Agent prompt session.\n\nSession id: \`${sessionId}\``,
+							status:
+								project.template_status === "configured" ? "Backlog" : "to do",
+							tags: ["agent", "source:human"],
+							notify_all: false,
+						},
+						creds.token,
+					);
+					sessionTaskId = created.id;
+					await this.appendTaskIndex(project.id, indexKey, sessionTaskId);
+					actions.push({ kind: "create_task", task_id: sessionTaskId });
+				} catch (err) {
+					this.log.warn(
+						`createTask (agent session) failed: ${(err as Error).message}`,
+					);
+					actions.push({ kind: "skipped", reason: "create_task_failed" });
+				}
+			}
+		}
+
+		if (sessionTaskId && event.outcome_summary) {
 			try {
 				await this.clickup.addComment(
-					overviewId,
+					sessionTaskId,
 					this.formatPromptComment(event),
 					creds.token,
 				);
-				actions.push({ kind: "comment", task_id: overviewId });
+				actions.push({ kind: "comment", task_id: sessionTaskId });
 			} catch (err) {
-				this.log.warn(`addComment overview failed: ${(err as Error).message}`);
+				this.log.warn(
+					`addComment session task failed: ${(err as Error).message}`,
+				);
 				actions.push({ kind: "skipped", reason: "comment_failed" });
 			}
-		} else {
-			actions.push({ kind: "skipped", reason: "no_overview_task" });
+		}
+
+		if (actions.length === 0) {
+			actions.push({ kind: "skipped", reason: "no_session_target" });
 		}
 
 		await this.recordActions(event.id, actions);
 		await this.touchLastSync(project.id);
 	}
 
+	private async appendTaskIndex(
+		projectId: string,
+		key: string,
+		value: string,
+	): Promise<void> {
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects
+       SET task_index = COALESCE(task_index, '{}'::jsonb) || jsonb_build_object($2::text, $3::text),
+           updated_at = NOW()
+       WHERE id = $1::uuid`,
+			projectId,
+			key,
+			value,
+		);
+	}
+
 	private async loadProject(projectId: string): Promise<ProjectSyncRow | null> {
 		const rows = await this.prisma.$queryRawUnsafe<ProjectSyncRow[]>(
 			`SELECT id, organisation_id, display_name, clickup_folder_id,
-              task_index::jsonb AS task_index
+              task_index::jsonb AS task_index,
+              list_ids::jsonb AS list_ids,
+              template_status
        FROM clickup_tracker.projects
        WHERE id = $1::uuid AND status <> 'removed'`,
 			projectId,
