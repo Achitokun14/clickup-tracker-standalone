@@ -70,8 +70,10 @@ export class BackfillController {
 		if (dto.note) {
 			await this.clickup.addComment(taskId, dto.note, creds.token);
 		}
-		await this.clickup.setTaskStatus(taskId, "Done", creds.token);
-		return { ok: true, status: "Done" };
+		const status =
+			project.template_status === "configured" ? "Done" : "complete";
+		await this.clickup.setTaskStatus(taskId, status, creds.token);
+		return { ok: true, status };
 	}
 
 	@Post("tasks/:taskId/reopen")
@@ -86,8 +88,10 @@ export class BackfillController {
 		if (dto.note) {
 			await this.clickup.addComment(taskId, dto.note, creds.token);
 		}
-		await this.clickup.setTaskStatus(taskId, "In Progress", creds.token);
-		return { ok: true, status: "In Progress" };
+		const status =
+			project.template_status === "configured" ? "In Progress" : "to do";
+		await this.clickup.setTaskStatus(taskId, status, creds.token);
+		return { ok: true, status };
 	}
 
 	@Post("tasks/:taskId/assign")
@@ -134,13 +138,22 @@ export class BackfillController {
 	private async assertProject(
 		req: any,
 		projectId: string,
-	): Promise<{ id: string; organisation_id: string }> {
+	): Promise<{
+		id: string;
+		organisation_id: string;
+		template_status: string | null;
+	}> {
 		const orgId = req.user?.orgId || req.headers?.["x-organisation-id"];
 		if (!orgId) throw new UnauthorizedException("missing x-organisation-id");
 		const rows = await this.prisma.$queryRawUnsafe<
-			Array<{ id: string; organisation_id: string }>
+			Array<{
+				id: string;
+				organisation_id: string;
+				template_status: string | null;
+			}>
 		>(
-			`SELECT id, organisation_id FROM clickup_tracker.projects
+			`SELECT id, organisation_id, template_status
+       FROM clickup_tracker.projects
        WHERE id = $1::uuid AND organisation_id = $2::uuid`,
 			projectId,
 			orgId,
