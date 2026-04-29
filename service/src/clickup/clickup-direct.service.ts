@@ -665,14 +665,26 @@ export class ClickUpDirectService {
 	): Promise<
 		Array<{ id: string; name: string; parent_page_id?: string | null }>
 	> {
-		const r = await this.fetchV3<{
+		// ClickUp v3 returns the array directly (not wrapped) — verified empirically.
+		const r = await this.fetchV3<unknown>(
+			`/workspaces/${workspaceId}/docs/${docId}/pages`,
+			token,
+		);
+		if (Array.isArray(r)) {
+			return r as Array<{
+				id: string;
+				name: string;
+				parent_page_id?: string | null;
+			}>;
+		}
+		const wrapped = r as {
 			pages?: Array<{
 				id: string;
 				name: string;
 				parent_page_id?: string | null;
 			}>;
-		}>(`/workspaces/${workspaceId}/docs/${docId}/pages`, token);
-		return r.pages ?? [];
+		};
+		return wrapped.pages ?? [];
 	}
 
 	// ---------- internal helpers ----------
