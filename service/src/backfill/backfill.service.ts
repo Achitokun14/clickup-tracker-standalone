@@ -14,6 +14,10 @@ import type {
 	SpaceFolderPlan,
 	SpacePlan,
 } from "../bulk/types";
+import {
+	backfillState as backfillStateMetric,
+	backfillTasksProcessed,
+} from "../metrics/registry";
 import { PrismaService } from "../prisma/prisma.service";
 import { QueueService } from "../queue/queue.service";
 
@@ -717,6 +721,21 @@ export class BackfillService implements OnModuleInit {
 			JSON.stringify(patch),
 			projectId,
 		);
+		// Mirror state into the gauge: 1 for the new status, 0 for all others.
+		if (patch.status) {
+			for (const s of ["queued", "running", "done", "failed"] as const) {
+				backfillStateMetric.set(
+					{ project_id: projectId, status: s },
+					s === patch.status ? 1 : 0,
+				);
+			}
+		}
+		if (typeof patch.processed === "number" && patch.processed >= 0) {
+			backfillTasksProcessed.inc(
+				{ project_id: projectId, outcome: "processed" },
+				0, // no-op increment to ensure the series exists
+			);
+		}
 	}
 
 	private async persistTaskIndex(

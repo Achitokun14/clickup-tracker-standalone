@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+#### Per-repo Space rewrite (PRs #12–#20)
+
+- **Per-repo Space registration**: every registered repo now becomes its own ClickUp Space with four Folders (📦 Backlog & Bugs, 🚧 Active Work, 📜 History, 📚 Knowledge), 7-status workflow + 6-status Bugs override, ISO-week Sprint Lists, a 5-page Doc, and one task per commit with native fields populated (priority, points, time_estimate, dates, tags, assignees). Opt in via `POST /projects` body `{ backfillMode: 'space' }`; `backfillMode: 'legacy'` keeps the old 3-list path for back-compat.
+- **`scripts/wipe-and-rereg.sh`**: convenience to wipe + re-register an existing project in Space mode and poll the backfill state.
+- **6 new control endpoints** on `/projects/:id`: `GET /backfill`, `POST /replan`, `POST /tasks/:taskId/{approve,reopen,assign,comment}`. Guarded by the existing `StandaloneAuthGuard`.
+- **6 new MCP tools** (`clickup_get_backfill_status`, `clickup_replan_project`, `clickup_approve_task`, `clickup_reopen_task`, `clickup_assign_task`, `clickup_comment_task`); 3 modified for the new response shape.
+- **6 new slash commands** mirrored into `agents/claude-code/commands/` and `agents/opencode/commands/`.
+- **Bidirectional ClickUp webhook**: `POST /public/clickup-events` guarded by `ClickUpHmacGuard` (HMAC-SHA256 of the raw body using `workspace_settings.webhook_secret`). Persists to `clickup_inbound_events`; the `cup-sync` worker drains rows, reverse-resolves task→project via `task_index`, and bumps `projects.last_seen_status_changes`.
+- **In-house token-bucket rate limiter** for ClickUp writes (default 90 req/min per token, env `CLICKUP_RATE_LIMIT_PER_MIN`). Retry on 429 (honours `X-RateLimit-Reset`) and 5xx (exponential 1/2/4/8/16 s, max 5).
+- **~25 new ClickUp client wrappers** including v3 `moveTaskToList`, `createDoc`/`createDocPage`, `createListView`, `createWebhook`, `createTimeEntry` (backdateable), `addDependency`, `assignTask`, `setTaskStatus`.
+- **`X-CUP-Source` header** on `/public/git-events` and `/public/prompt-events` (defaults to `human`). Becomes a `source:<kebab>` tag on every created task.
+- **Time Entries opt-in** (env `CUP_BACKFILL_TIME_ENTRIES=on`) — per-commit `createTimeEntry` using the planner's `estimateMinutes` fallback. Off by default because of the API budget.
+- **Dependency linking** (default ON, env `CUP_BACKFILL_DEPENDENCIES=off` toggles) — when an Agent Sessions task and a commit task share a `(scope)`, link them via `addDependency`.
+- **Per-repo Space planner** (`bulk/hierarchy.ts:planSpace`) — pure function returning a `SpacePlan`. Both backfill and lifecycle use the same `planSpaceCommitTask()` helper, so backfilled and live commits look identical.
+- **Server-side extractors**: `git-history.extractor.ts` (numstat-aware, ISO-week sprint bucketing, capped at `MAX_BACKFILL_COMMITS=5000`) and `repo-extract.extractor.ts` (README/CHANGELOG/package metadata + TODO/FIXME scan with 1MB/file and 200-marker caps). Daemon now owns canonical extraction.
+- **BGMT classifier** (`util/classify.ts`) — verbatim port of the upstream Python `KEYWORD_CLUSTERS`, `TAG_KEYWORDS`, `AUTHOR_MAP`, `classifyType`, `classifyEpic`, `deriveTags`, `assignPriority`, `estimateMinutes`.
+- **ISO 8601 week util** + **git remote parser** + **commit URL formatter** (host-aware GitHub/GitLab/Bitbucket/Gitea/Codeberg).
+- **scope_config subdir filter** is finally enforced on the daemon — when `project.scope_config.mode='subdir'` and zero files match a tracked path, the `git_event` row persists but ClickUp emission is skipped.
+- **3 new Prometheus metrics**: `cup_backfill_state{project_id, status}`, `cup_backfill_tasks_processed_total{project_id, outcome}`, `cup_inbound_webhooks_total{event_type, processed}`.
+- **Pino redact list** expanded to mask `Authorization` headers and `*.token`/`*.hookSecret`/`*.webhook_secret`.
+- **2 new docs**: `docs/space-model.md` (per-repo Space structure, idempotency, performance budget) and `docs/runbook.md` (operational recipes).
+- **Per-repo Space schema delta** (`schema/02_per_repo_space.sql`): 8 new project columns, 2 new tables (`workspace_settings`, `clickup_inbound_events`), 4 new indexes including a functional UNIQUE on inbound dedup.
+- **`.github/CODEOWNERS`** so branch-protection's `require_code_owner_reviews` is satisfiable.
+
+#### Earlier work
+
 - **OAuth bootstrap** (`scripts/oauth-bootstrap.sh` + `oauth-bootstrap.py`) — one-shot browser flow that exchanges a ClickUp OAuth `client_id` + `client_secret` for an access token and writes it into `.env`. Lets users whose accounts disallow personal API tokens still run the tracker. Auto-detects the workspace ID via `/api/v2/team`.
 - `.env.example` documents both the personal-token path and the OAuth path; `CREDS.md` explains both with end-to-end instructions.
 

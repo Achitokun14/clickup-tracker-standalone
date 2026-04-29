@@ -37,6 +37,7 @@ yarn-error.log*
 # ── Editor / IDE ───────────────────────────────────────────────────
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~

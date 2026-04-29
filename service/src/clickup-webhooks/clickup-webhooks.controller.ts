@@ -7,6 +7,7 @@ import {
 	Req,
 	UseGuards,
 } from "@nestjs/common";
+import { inboundWebhooksTotal } from "../metrics/registry";
 import { PrismaService } from "../prisma/prisma.service";
 import { QueueService } from "../queue/queue.service";
 import { ClickUpHmacGuard } from "./clickup-hmac.guard";
@@ -84,8 +85,13 @@ export class ClickUpWebhooksController {
 					taskId || null,
 					JSON.stringify({ event: eventType, item, top: { task_id: taskId } }),
 				);
-				if (out.length > 0) inserted += 1;
-				else skipped.push(itemId || webhookEventId);
+				if (out.length > 0) {
+					inserted += 1;
+					inboundWebhooksTotal.inc({ event_type: eventType, processed: "false" });
+				} else {
+					skipped.push(itemId || webhookEventId);
+					inboundWebhooksTotal.inc({ event_type: eventType, processed: "deduplicated" });
+				}
 			} catch (err) {
 				this.log.warn(
 					`inbound insert failed: ${(err as Error).message}`,
