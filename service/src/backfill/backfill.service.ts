@@ -334,6 +334,7 @@ export class BackfillService implements OnModuleInit {
 					{
 						features: plan.features,
 						multiple_assignees: plan.multipleAssignees,
+						statuses: plan.statuses as ClickUpStatus[],
 					},
 				);
 		await this.prisma.$executeRawUnsafe(
