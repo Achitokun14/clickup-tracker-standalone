@@ -538,6 +538,28 @@ export function sprintListKey(isoWeekKey: string): string {
 	return `sprint:${isoWeekKey}`;
 }
 
+/**
+ * Public single-commit planner. Used by the lifecycle handler in
+ * events.service to construct a PlannedSpaceTask for a brand-new commit
+ * landing via the post-commit webhook — guarantees backfill and live
+ * lifecycle produce identical task shapes.
+ */
+export function planSpaceCommitTask(
+	commit: CommitRecord,
+	defaultBranch: string,
+	remote: ParsedGitRemote | null,
+	defaultSource = "human",
+	authorMap?: Record<string, string>,
+): PlannedSpaceTask {
+	return planCommitTask(
+		commit,
+		defaultBranch,
+		remote,
+		defaultSource,
+		authorMap,
+	);
+}
+
 function planCommitTask(
 	commit: CommitRecord,
 	defaultBranch: string,

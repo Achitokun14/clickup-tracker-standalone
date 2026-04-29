@@ -18,9 +18,15 @@ export class EventsController {
     @Req() req: any,
     @Body() dto: GitEventDto,
     @Headers('x-cup-idempotency-key') idempotencyKey?: string,
+    @Headers('x-cup-source') source?: string,
   ) {
     const projectId = req.cupProject.id;
-    const receipt = await this.events.ingestGit(projectId, dto, idempotencyKey);
+    const receipt = await this.events.ingestGit(
+      projectId,
+      dto,
+      idempotencyKey,
+      source,
+    );
     return { ok: true, ...receipt };
   }
 
@@ -30,9 +36,15 @@ export class EventsController {
     @Req() req: any,
     @Body() dto: PromptEventDto,
     @Headers('x-cup-idempotency-key') idempotencyKey?: string,
+    @Headers('x-cup-source') source?: string,
   ) {
     const projectId = req.cupProject.id;
-    const receipt = await this.events.ingestPrompt(projectId, dto, idempotencyKey);
+    const receipt = await this.events.ingestPrompt(
+      projectId,
+      dto,
+      idempotencyKey,
+      source,
+    );
     return { ok: true, ...receipt };
   }
 }

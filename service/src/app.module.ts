@@ -9,6 +9,7 @@ import { QueueModule } from "./queue/queue.module";
 import { SyncModule } from "./sync/sync.module";
 import { BackupModule } from "./backup/backup.module";
 import { BackfillModule } from "./backfill/backfill.module";
+import { ClickUpWebhooksModule } from "./clickup-webhooks/clickup-webhooks.module";
 
 @Module({
 	imports: [
@@ -19,6 +20,7 @@ import { BackfillModule } from "./backfill/backfill.module";
 		SyncModule,
 		BackupModule,
 		BackfillModule,
+		ClickUpWebhooksModule,
 	],
 	controllers: [HealthController, OpenApiController, MetricsController],
 	providers: [],
