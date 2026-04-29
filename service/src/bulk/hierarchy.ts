@@ -219,6 +219,32 @@ export const SPACE_STATUSES: StatusDef[] = [
 	{ status: "Archived", type: "closed", color: "#6f7782", orderindex: 6 },
 ];
 
+/**
+ * Map a 7-status / 6-status name to ClickUp's default 2-status set
+ * ("to do" | "complete"). ClickUp v2 silently ignores `statuses` on both
+ * createSpace and PUT /space — so newly-created Spaces always start with
+ * the default set. Until the user runs the manual UI walkthrough to
+ * upgrade the workspace, lifecycle/backfill must emit names that exist.
+ *
+ * Mapping rules:
+ *   - any "done" or "closed" type     → "complete"
+ *   - everything else                 → "to do"
+ */
+export function mapInlineStatus(name: string): "to do" | "complete" {
+	const lower = name.toLowerCase();
+	if (
+		lower === "done" ||
+		lower === "archived" ||
+		lower === "closed" ||
+		lower === "won't fix" ||
+		lower === "wont fix" ||
+		lower === "complete"
+	) {
+		return "complete";
+	}
+	return "to do";
+}
+
 /** 6-status override applied to the Bugs List only. */
 export const BUG_STATUSES: StatusDef[] = [
 	{ status: "Reported", type: "open", color: "#e50000", orderindex: 0 },
