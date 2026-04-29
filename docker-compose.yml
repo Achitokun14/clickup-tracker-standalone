@@ -59,6 +59,11 @@ services:
       METRICS_AUTH_TOKEN: ${METRICS_AUTH_TOKEN:-}
     ports:
       - "${TRACKER_PORT:-4020}:4020"
+    # Mount the host so the daemon's server-side git extractor can read
+    # registered repos at their host paths (read-only). Override CUP_HOST_MOUNT
+    # in .env when the user's repos live elsewhere; default = $HOME.
+    volumes:
+      - ${CUP_HOST_MOUNT:-${HOME}}:${CUP_HOST_MOUNT:-${HOME}}:ro
 
 volumes:
   cup_pgdata:

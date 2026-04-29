@@ -58,6 +58,28 @@ export class BackfillController {
 		return { ok: true, jobId };
 	}
 
+	/**
+	 * Flip template_status after the user has manually upgraded the workspace
+	 * via the UI walkthrough at docs/clickup-template/README.md (set the 7-status
+	 * cascade on the Space + 6-status override on the Bugs List). Once flipped,
+	 * the lifecycle handler stops mapping to "to do"/"complete" and uses the
+	 * literal 7-status names.
+	 */
+	@Post("template-configured")
+	async markTemplateConfigured(
+		@Req() req: any,
+		@Param("projectId") projectId: string,
+	) {
+		await this.assertProject(req, projectId);
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects
+       SET template_status = 'configured', updated_at = NOW()
+       WHERE id = $1::uuid`,
+			projectId,
+		);
+		return { ok: true, template_status: "configured" };
+	}
+
 	@Post("tasks/:taskId/approve")
 	async approveTask(
 		@Req() req: any,
