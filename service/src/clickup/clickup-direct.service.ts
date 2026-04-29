@@ -642,7 +642,12 @@ export class ClickUpDirectService {
 		workspaceId: string,
 		docId: string,
 		pageId: string,
-		body: { name?: string; content?: string; sub_title?: string },
+		body: {
+			name?: string;
+			content?: string;
+			sub_title?: string;
+			content_edit_mode?: "replace" | "append" | "prepend";
+		},
 		token: string,
 	): Promise<void> {
 		await this.fetchV3(
@@ -651,6 +656,23 @@ export class ClickUpDirectService {
 			"PUT",
 			body,
 		);
+	}
+
+	async listDocPages(
+		workspaceId: string,
+		docId: string,
+		token: string,
+	): Promise<
+		Array<{ id: string; name: string; parent_page_id?: string | null }>
+	> {
+		const r = await this.fetchV3<{
+			pages?: Array<{
+				id: string;
+				name: string;
+				parent_page_id?: string | null;
+			}>;
+		}>(`/workspaces/${workspaceId}/docs/${docId}/pages`, token);
+		return r.pages ?? [];
 	}
 
 	// ---------- internal helpers ----------
