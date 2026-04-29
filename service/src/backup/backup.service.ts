@@ -64,10 +64,13 @@ export class BackupService {
 
 		const creds = await this.credentials.forOrg(project.organisation_id);
 
-		const folder = await this.clickup.getFolder(
-			project.clickup_folder_id,
-			creds.token,
-		);
+		// Per-repo Space model has no single clickup_folder_id (multiple
+		// Folders live under one Space). Skip the legacy folder probe and
+		// stub out the folder block for snapshot consumers that still expect
+		// it. Old projects that *do* have a clickup_folder_id still resolve.
+		const folder = project.clickup_folder_id
+			? await this.clickup.getFolder(project.clickup_folder_id, creds.token)
+			: { id: "", name: project.display_name ?? projectId };
 		const inverseTaskIndex = invertTaskIndex(project.task_index);
 
 		const listEntries: Array<{ id: string; key: string; name: string }> = [];

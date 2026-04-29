@@ -152,6 +152,23 @@ describe("ClickUpDirectService retry/limiter behaviour", () => {
 		expect(observedBody).not.toHaveProperty("markdown_description");
 	});
 
+	it("listDocPages handles the v3 array-shaped response (current ClickUp behaviour)", async () => {
+		const pages = [
+			{ id: "p1", name: "Overview" },
+			{ id: "p2", name: "Changelog", parent_page_id: null },
+		];
+		mockResponses({ status: 200, body: JSON.stringify(pages) });
+		const out = await svc.listDocPages("ws1", "doc1", "tok");
+		expect(out).toEqual(pages);
+	});
+
+	it("listDocPages also tolerates a {pages: [...]} wrapped response", async () => {
+		const pages = [{ id: "p3", name: "Setup" }];
+		mockResponses({ status: 200, body: JSON.stringify({ pages }) });
+		const out = await svc.listDocPages("ws1", "doc1", "tok");
+		expect(out).toEqual(pages);
+	});
+
 	it("uses the v3 base URL for moveTaskToList", async () => {
 		let observedUrl: string | undefined;
 		global.fetch = jest.fn(async (url: unknown) => {
