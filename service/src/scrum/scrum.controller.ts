@@ -11,6 +11,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "./audit.service";
+import { GroomerService } from "./groomer.service";
 import { SprintPlannerService } from "./sprint-planner.service";
 
 /**
@@ -25,6 +26,7 @@ export class ScrumController {
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly planner: SprintPlannerService,
+		private readonly groomer: GroomerService,
 		private readonly audit: AuditService,
 	) {}
 
@@ -40,6 +42,20 @@ export class ScrumController {
 		}
 		const isDry = dryRun !== "false";
 		return this.planner.planSprint(id, isDry);
+	}
+
+	@Post(":id/scrum/groom")
+	async groom(
+		@Req() req: any,
+		@Param("id") id: string,
+		@Query("dryRun") dryRun?: string,
+	) {
+		orgIdOrThrow(req);
+		if (process.env.CUP_AUTOSCRUM === "off") {
+			return { skipped: "autoscrum_disabled" };
+		}
+		const isDry = dryRun !== "false";
+		return this.groomer.groom(id, isDry);
 	}
 
 	@Get(":id/scrum/state")

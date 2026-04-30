@@ -317,6 +317,24 @@ export class ClickUpDirectService {
 		});
 	}
 
+	/**
+	 * Attach an existing Space-level tag to a task. The tag must already
+	 * exist in the Space (call createSpaceTag first if unsure). The CU
+	 * v2 endpoint is POST /task/{id}/tag/{name} with no body.
+	 */
+	async addTagToTask(
+		taskId: string,
+		tagName: string,
+		token: string,
+	): Promise<void> {
+		await this.fetchV2(
+			`/task/${taskId}/tag/${encodeURIComponent(tagName)}`,
+			token,
+			"POST",
+			{},
+		);
+	}
+
 	// ---------- tasks ----------
 
 	async createTask(
