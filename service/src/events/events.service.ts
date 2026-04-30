@@ -127,26 +127,65 @@ export class EventsService {
 		}
 
 		// 3. Persist git_events row (always — even if scope filter rejects).
+		//    `clickup_team_id` is set so the team-level partial UNIQUE index
+		//    (Plan §B.4) can dedupe the same SHA across two developers'
+		//    project rows. The legacy (project_id, commit_sha) UNIQUE still
+		//    fires on same-project replay; we keep ON CONFLICT pointed at it
+		//    so DO UPDATE behaviour is preserved. Cross-project, same-team
+		//    duplicates surface as a unique-violation we catch below.
 		const branch = this.resolveBranch(dto, project);
-		const inserted = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
-			`INSERT INTO clickup_tracker.git_events (
-        project_id, commit_sha, branch, author, committer_email,
-        committed_at, message, files_changed, todo_diffs, resulting_actions
-      )
-      VALUES ($1::uuid, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW()), $7, $8::jsonb, $9::jsonb, '[]'::jsonb)
-      ON CONFLICT (project_id, commit_sha) DO UPDATE SET message = EXCLUDED.message
-      RETURNING id`,
-			project.id,
-			dto.commit_sha,
-			branch,
-			dto.author ?? null,
-			dto.committer_email ?? null,
-			dto.committed_at ?? null,
-			dto.message,
-			JSON.stringify(dto.files_changed ?? []),
-			JSON.stringify(dto.todo_diffs ?? []),
-		);
-		const eventId = inserted[0].id;
+		let eventId: string;
+		try {
+			const inserted = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
+				`INSERT INTO clickup_tracker.git_events (
+          project_id, clickup_team_id, commit_sha, branch, author, committer_email,
+          committed_at, message, files_changed, todo_diffs, resulting_actions
+        )
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, NOW()), $8, $9::jsonb, $10::jsonb, '[]'::jsonb)
+        ON CONFLICT (project_id, commit_sha) DO UPDATE SET message = EXCLUDED.message
+        RETURNING id`,
+				project.id,
+				project.clickup_team_id ?? null,
+				dto.commit_sha,
+				branch,
+				dto.author ?? null,
+				dto.committer_email ?? null,
+				dto.committed_at ?? null,
+				dto.message,
+				JSON.stringify(dto.files_changed ?? []),
+				JSON.stringify(dto.todo_diffs ?? []),
+			);
+			eventId = inserted[0].id;
+		} catch (err) {
+			// Team-level UNIQUE collision: another developer's daemon already
+			// recorded this commit. Look up the canonical row, return its id,
+			// and skip downstream ClickUp emission (the first daemon owns the
+			// task; this one just attributes the local event).
+			const msg = (err as Error).message ?? "";
+			if (msg.includes("git_events_team_sha_uniq") && project.clickup_team_id) {
+				const existing = await this.prisma.$queryRawUnsafe<
+					Array<{ id: string }>
+				>(
+					`SELECT id FROM clickup_tracker.git_events
+           WHERE clickup_team_id = $1 AND commit_sha = $2
+           LIMIT 1`,
+					project.clickup_team_id,
+					dto.commit_sha,
+				);
+				if (!existing[0]) throw err;
+				this.log.log(
+					`git-event sha=${dto.commit_sha.slice(0, 8)} already recorded by ` +
+						`peer daemon in team ${project.clickup_team_id}; skipping CU emit`,
+				);
+				return {
+					eventId: existing[0].id,
+					replayed: true,
+					actionsCount: 0,
+					actions: [{ kind: "skipped", reason: "peer_daemon_owns" }],
+				};
+			}
+			throw err;
+		}
 
 		// 4. Conventional-commit + clickup-skip handling.
 		const cc = parseConventional(dto.message);
