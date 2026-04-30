@@ -78,7 +78,13 @@ SCOPE_PATHS="${SCOPE_PATHS}"
 
 sha=\$(git rev-parse HEAD)
 parent=\$(git rev-parse "\${sha}^" 2>/dev/null || echo "")
-branch=\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+branch=\$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+# Detached HEAD or git-failure fallback — never POST an empty branch.
+# Daemon also synthesises this server-side, but a populated value here is
+# preferred (preserves the actual branch name when it exists).
+if [ -z "\$branch" ] || [ "\$branch" = "HEAD" ]; then
+  branch=\$(git config --get init.defaultBranch 2>/dev/null || echo "main")
+fi
 author=\$(git log -1 --format=%an)
 email=\$(git log -1 --format=%ae)
 ts=\$(git log -1 --format=%cI)

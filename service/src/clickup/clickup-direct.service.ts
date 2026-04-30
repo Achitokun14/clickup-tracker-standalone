@@ -381,6 +381,17 @@ export class ClickUpDirectService {
 		await this.updateTask(taskId, { status }, token);
 	}
 
+	/**
+	 * Archive a task (CU-soft delete; recoverable from CU UI Trash for 30
+	 * days). Used by the repair-routing flow to clean up duplicates from
+	 * prior wipe-and-rereg cycles. Hard-delete is intentionally NOT
+	 * exposed — keeps Plan §C.0's "every autonomous action is reversible"
+	 * invariant intact.
+	 */
+	async archiveTask(taskId: string, token: string): Promise<void> {
+		await this.fetchV2(`/task/${taskId}`, token, "PUT", { archived: true });
+	}
+
 	async setTaskDates(
 		taskId: string,
 		startMs: number | null,

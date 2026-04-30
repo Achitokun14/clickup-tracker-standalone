@@ -79,6 +79,27 @@ export class EventsService {
 
 	// ── git events ─────────────────────────────────────────────
 
+	/**
+	 * Resolve the branch for an incoming git-event payload. The post-commit
+	 * hook *should* always send a branch, but stale hooks (installed before
+	 * the branch-default fix) can send empty strings. When that happens we
+	 * synth from project.git_default_branch so the planner doesn't misroute
+	 * the commit to In Review (Plan §A.1, Bug 1, layer 2 of 3).
+	 */
+	private resolveBranch(
+		dto: { branch?: string | null },
+		project: { id: string; git_default_branch: string | null },
+	): string {
+		const trimmed = (dto.branch ?? "").trim();
+		if (trimmed) return trimmed;
+		const fallback = project.git_default_branch ?? "main";
+		this.log.warn(
+			`git-event for project ${project.id} arrived without branch; ` +
+				`synthesising '${fallback}' (stale hook?)`,
+		);
+		return fallback;
+	}
+
 	async ingestGit(
 		projectId: string,
 		dto: GitEventDto,
@@ -106,6 +127,7 @@ export class EventsService {
 		}
 
 		// 3. Persist git_events row (always — even if scope filter rejects).
+		const branch = this.resolveBranch(dto, project);
 		const inserted = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
 			`INSERT INTO clickup_tracker.git_events (
         project_id, commit_sha, branch, author, committer_email,
@@ -116,7 +138,7 @@ export class EventsService {
       RETURNING id`,
 			project.id,
 			dto.commit_sha,
-			dto.branch ?? null,
+			branch,
 			dto.author ?? null,
 			dto.committer_email ?? null,
 			dto.committed_at ?? null,
@@ -239,6 +261,7 @@ export class EventsService {
 	): Promise<void> {
 		// 1. Build a synthetic CommitRecord so the lifecycle path runs through
 		// the *exact same* planner as backfill (planSpaceCommitTask).
+		const branch = this.resolveBranch(dto, project);
 		const author = dto.author ?? "";
 		const committedAt = dto.committed_at ?? new Date().toISOString();
 		const week = isoWeekOf(new Date(committedAt));
@@ -273,8 +296,8 @@ export class EventsService {
 				email: dto.committer_email ?? "",
 				date: committedAt,
 			},
-			refs: dto.branch ? [dto.branch, `origin/${dto.branch}`] : [],
-			branch: dto.branch ?? null,
+			refs: [branch, `origin/${branch}`],
+			branch,
 			subject: cc.subject || dto.message.split("\n")[0],
 			body: cc.body,
 			type: mapCcTypeToBgmt(cc.type) ?? "Chore",

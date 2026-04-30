@@ -597,7 +597,13 @@ function planCommitTask(
 		commit.branch === defaultBranch ||
 		commit.refs.some(
 			(r) => r === defaultBranch || r === `origin/${defaultBranch}`,
-		);
+		) ||
+		// Defence in depth: if neither branch nor refs reached us, treat as
+		// default. A post-commit hook on a developer's local repo without
+		// branch info is overwhelmingly on the local default branch; routing
+		// such commits to in_review buries them. Layered with hook-script +
+		// daemon-side synth so this branch should rarely fire in practice.
+		(commit.branch == null && commit.refs.length === 0);
 	const status = onDefault ? "Done" : "In Review";
 	const listKey = onDefault ? sprintListKey(commit.sprintKey) : "in_review";
 

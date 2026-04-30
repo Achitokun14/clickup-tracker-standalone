@@ -133,6 +133,28 @@ describe("planSpace", () => {
 		);
 	});
 
+	it("routes branch-null + refs-empty commits to the sprint List (Bug 1, layer 3)", () => {
+		// Plan §A.1 layer 3: when a stale post-commit hook ships no branch and
+		// daemon-side synth somehow misses, the planner treats this as
+		// default-branch (the overwhelmingly likely truth on a developer's
+		// local repo) instead of dumping the commit into In Review.
+		const orphan = makeCommit({
+			sha: "0".repeat(40),
+			subject: "feat: orphan branch info",
+			branch: null,
+			refs: [],
+			sprintKey: "2026-W16",
+		});
+		const plan = planSpace(
+			makeRepo(),
+			makeExtract(),
+			makeHistory({ commits: [orphan] }),
+		);
+		const t = plan.tasks.find((t) => t.key === `commit:${"0".repeat(40)}`);
+		expect(t?.status).toBe("Done");
+		expect(t?.listKey).toBe(sprintListKey("2026-W16"));
+	});
+
 	it("routes non-default-branch commits to In Review", () => {
 		const featBranch = makeCommit({
 			sha: "f".repeat(40),

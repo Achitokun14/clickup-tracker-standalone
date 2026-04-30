@@ -61,6 +61,21 @@ class FakePrisma {
 			trimmed.startsWith("UPDATE clickup_tracker.projects SET clickup_space_id")
 		) {
 			this.project.clickup_space_id = params[0] as string;
+		} else if (
+			// appendBackfillError: SET backfill_state = jsonb_set(... '{errors}' ...)
+			sql.includes("jsonb_set") &&
+			sql.includes("'{errors}'")
+		) {
+			const errors = (this.project.backfill_state.errors as unknown[]) ?? [];
+			errors.push({
+				op: params[1],
+				message: params[2],
+				at: new Date().toISOString(),
+			});
+			this.project.backfill_state = {
+				...this.project.backfill_state,
+				errors,
+			};
 		} else if (trimmed.startsWith("UPDATE clickup_tracker.projects SET")) {
 			if (sql.includes("backfill_state")) {
 				const patch = JSON.parse(params[0] as string);
@@ -108,9 +123,13 @@ class FakeCredentials {
 class FakeClickUp {
 	calls: Array<{ method: string; args: unknown[] }> = [];
 	createdTaskCounter = 0;
+	failCreateDoc = false;
+	failPagesNamed: Set<string> = new Set();
+	seededSpaces: Array<{ id: string; name: string }> = [];
 
 	async listSpaces() {
-		return [];
+		this.calls.push({ method: "listSpaces", args: [] });
+		return this.seededSpaces.map((s) => ({ ...s }));
 	}
 	async createSpace(_t: string, name: string) {
 		this.calls.push({ method: "createSpace", args: [name] });
@@ -144,10 +163,13 @@ class FakeClickUp {
 	}
 	async createDoc() {
 		this.calls.push({ method: "createDoc", args: [] });
+		if (this.failCreateDoc) throw new Error("simulated createDoc 500");
 		return { id: "DOC1" };
 	}
 	async createDocPage(_t: string, _d: string, body: { name: string }) {
 		this.calls.push({ method: "createDocPage", args: [body.name] });
+		if (this.failPagesNamed.has(body.name))
+			throw new Error(`simulated createDocPage(${body.name}) 500`);
 		return { id: "PAGE" };
 	}
 	async createListView() {
@@ -338,5 +360,67 @@ describe("BackfillService", () => {
 		await svc.runFor("00000000-0000-0000-0000-000000000001");
 		const state = await svc.getState("00000000-0000-0000-0000-000000000001");
 		expect(state?.status).toBe("done");
+	});
+
+	it("ensureDoc persists clickup_doc_id even when later page-creates fail (Bug 2)", async () => {
+		const prisma = new FakePrisma(makeFakeProject());
+		const { svc, clickup } = buildService(prisma);
+		// Fail every page; createDoc itself succeeds.
+		clickup.failPagesNamed = new Set([
+			"Overview",
+			"Setup",
+			"Conventions",
+			"Changelog",
+			"Agent Prompt Log",
+		]);
+		await svc.runFor("00000000-0000-0000-0000-000000000001");
+		// docId persisted despite all 5 page failures
+		expect(prisma.getProject().clickup_doc_id).toBe("DOC1");
+		// Each page failure recorded
+		const errors = (prisma.getProject().backfill_state as any).errors ?? [];
+		expect(errors.length).toBeGreaterThanOrEqual(5);
+		expect(errors.some((e: any) => e.op?.startsWith("createDocPage:"))).toBe(
+			true,
+		);
+	});
+
+	it("ensureDoc records createDoc failure in backfill_state.errors and leaves docId null", async () => {
+		const prisma = new FakePrisma(makeFakeProject());
+		const { svc, clickup } = buildService(prisma);
+		clickup.failCreateDoc = true;
+		await svc.runFor("00000000-0000-0000-0000-000000000001");
+		expect(prisma.getProject().clickup_doc_id).toBeNull();
+		const errors = (prisma.getProject().backfill_state as any).errors ?? [];
+		expect(errors.some((e: any) => e.op === "createDoc")).toBe(true);
+	});
+
+	it("ensureSpace adopts an existing same-name Space (Plan §A.5 wipe-aware re-register)", async () => {
+		const prisma = new FakePrisma(makeFakeProject());
+		const { svc, clickup } = buildService(prisma);
+		clickup.seededSpaces = [{ id: "SPACE_PREEXISTING", name: "Sample Repo" }];
+		await svc.runFor("00000000-0000-0000-0000-000000000001");
+		// Adopted, not created
+		expect(clickup.calls.some((c) => c.method === "createSpace")).toBe(false);
+		expect(prisma.getProject().clickup_space_id).toBe("SPACE_PREEXISTING");
+	});
+
+	it("ensureSpace creates a new Space when no name match exists (regression)", async () => {
+		const prisma = new FakePrisma(makeFakeProject());
+		const { svc, clickup } = buildService(prisma);
+		clickup.seededSpaces = [{ id: "SPACE_OTHER", name: "Unrelated Repo" }];
+		await svc.runFor("00000000-0000-0000-0000-000000000001");
+		expect(clickup.calls.some((c) => c.method === "createSpace")).toBe(true);
+		expect(prisma.getProject().clickup_space_id).toBe("SPACE1");
+	});
+
+	it("ensureDoc is a no-op on second run when clickup_doc_id already set", async () => {
+		const project = makeFakeProject();
+		project.clickup_doc_id = "DOC_PRE_EXISTING";
+		const prisma = new FakePrisma(project);
+		const { svc, clickup } = buildService(prisma);
+		await svc.runFor("00000000-0000-0000-0000-000000000001");
+		// createDoc must not have been called
+		expect(clickup.calls.some((c) => c.method === "createDoc")).toBe(false);
+		expect(prisma.getProject().clickup_doc_id).toBe("DOC_PRE_EXISTING");
 	});
 });

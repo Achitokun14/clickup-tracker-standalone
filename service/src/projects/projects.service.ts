@@ -37,6 +37,15 @@ export interface ProjectRow {
 	last_synced_at: Date | null;
 	created_at: Date;
 	updated_at: Date;
+	// Per-repo Space columns (schema/02_per_repo_space.sql).
+	clickup_doc_id: string | null;
+	sprint_lists: Record<string, string>;
+	backfill_state: Record<string, unknown> | null;
+	template_status: string | null;
+	git_default_branch: string | null;
+	git_remote_host: string | null;
+	git_remote_owner_repo: string | null;
+	last_seen_status_changes: unknown[];
 }
 
 export interface ProjectSummary {
