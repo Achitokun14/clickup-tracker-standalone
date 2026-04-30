@@ -8,6 +8,8 @@ import { QueueModule } from "../queue/queue.module";
 import { RepairService } from "../repair/repair.service";
 import { ProjectsController } from "./projects.controller";
 import { ProjectsService } from "./projects.service";
+import { LookupService } from "./lookup.service";
+import { AdoptService } from "./adopt.service";
 
 @Module({
 	imports: [QueueModule],
@@ -20,6 +22,8 @@ import { ProjectsService } from "./projects.service";
 		BackupService,
 		ProjectsService,
 		RepairService,
+		LookupService,
+		AdoptService,
 	],
 	exports: [
 		PrismaService,
@@ -29,6 +33,8 @@ import { ProjectsService } from "./projects.service";
 		BackupService,
 		ProjectsService,
 		RepairService,
+		LookupService,
+		AdoptService,
 	],
 })
 export class ProjectsModule {}

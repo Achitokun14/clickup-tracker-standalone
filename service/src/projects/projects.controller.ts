@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { ProjectsService, ProjectRow } from './projects.service';
 import { RepairService } from '../repair/repair.service';
+import { LookupService } from './lookup.service';
+import { AdoptService, AdoptDto } from './adopt.service';
 import { RegisterProjectDto, PatchProjectDto } from './dto/register-project.dto';
 
 /**
@@ -41,12 +43,52 @@ export class ProjectsController {
   constructor(
     private readonly projects: ProjectsService,
     private readonly repair: RepairService,
+    private readonly lookupSvc: LookupService,
+    private readonly adoptSvc: AdoptService,
   ) {}
+
+  /**
+   * Plan §B.2 — explicit adoption of an existing ClickUp Space. Hydrates
+   * list_ids / sprint_lists / task_index from the Space's contents so
+   * the daemon never re-creates tasks that already exist there. Manual
+   * tasks (those without the auto-imported footer) are left untouched.
+   */
+  @Post('adopt')
+  async adopt(@Req() req: any, @Body() dto: AdoptDto) {
+    const orgId = orgIdOrThrow(req);
+    return this.adoptSvc.adopt(orgId, dto);
+  }
 
   @Get()
   list(@Req() req: any) {
     const orgId = orgIdOrThrow(req);
     return this.projects.list(orgId);
+  }
+
+  /**
+   * Plan §B.1 — read-only candidate-Space lookup powering the
+   * "/clickup-add" detect-and-prompt flow. Returns matches ranked by
+   * strength so the agent can offer adopt-vs-create. `?scanFooters=true`
+   * enables the more expensive remote-URL footer scan; the default
+   * (shallow) is a single listSpaces() call. Result cached 60s per
+   * (orgId, displayName, gitRemoteUrl).
+   */
+  @Get('lookup')
+  async lookup(
+    @Req() req: any,
+    @Query('displayName') displayName?: string,
+    @Query('gitRemoteUrl') gitRemoteUrl?: string,
+    @Query('scanFooters') scanFooters?: string,
+  ) {
+    const orgId = orgIdOrThrow(req);
+    if (!displayName) return { matches: [] };
+    const matches = await this.lookupSvc.lookup({
+      orgId,
+      displayName,
+      gitRemoteUrl: gitRemoteUrl ?? null,
+      scanFooters: scanFooters === 'true',
+    });
+    return { matches };
   }
 
   /**
