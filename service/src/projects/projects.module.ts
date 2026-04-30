@@ -5,6 +5,7 @@ import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import { ClickUpRateLimiter } from "../clickup/rate-limiter";
 import { BackupService } from "../backup/backup.service";
 import { QueueModule } from "../queue/queue.module";
+import { RepairService } from "../repair/repair.service";
 import { ProjectsController } from "./projects.controller";
 import { ProjectsService } from "./projects.service";
 
@@ -18,6 +19,7 @@ import { ProjectsService } from "./projects.service";
 		ClickUpDirectService,
 		BackupService,
 		ProjectsService,
+		RepairService,
 	],
 	exports: [
 		PrismaService,
@@ -26,6 +28,7 @@ import { ProjectsService } from "./projects.service";
 		ClickUpDirectService,
 		BackupService,
 		ProjectsService,
+		RepairService,
 	],
 })
 export class ProjectsModule {}

@@ -292,6 +292,37 @@ describe("EventsService — per-repo Space lifecycle", () => {
 		expect(clickup.calls.length).toBe(callsAfterFirst);
 	});
 
+	it("resolveBranch synthesises default when dto.branch is empty (Bug 1, layer 2)", async () => {
+		const prisma = new FakePrisma(makeProject());
+		const { svc } = buildSvc(prisma);
+		// resolveBranch is private; call via cast for the test.
+		const out = (svc as any).resolveBranch(
+			{ branch: "" },
+			{ id: "p1", git_default_branch: "trunk" },
+		);
+		expect(out).toBe("trunk");
+	});
+
+	it("resolveBranch passes through populated branch unchanged", async () => {
+		const prisma = new FakePrisma(makeProject());
+		const { svc } = buildSvc(prisma);
+		const out = (svc as any).resolveBranch(
+			{ branch: "feature/x" },
+			{ id: "p1", git_default_branch: "main" },
+		);
+		expect(out).toBe("feature/x");
+	});
+
+	it("resolveBranch falls back to 'main' when project has no git_default_branch", async () => {
+		const prisma = new FakePrisma(makeProject());
+		const { svc } = buildSvc(prisma);
+		const out = (svc as any).resolveBranch(
+			{ branch: null },
+			{ id: "p1", git_default_branch: null },
+		);
+		expect(out).toBe("main");
+	});
+
 	it("respects the clickup-skip marker", async () => {
 		const prisma = new FakePrisma(makeProject());
 		const { svc, clickup } = buildSvc(prisma);

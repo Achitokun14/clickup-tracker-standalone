@@ -488,6 +488,14 @@ export class BackfillService implements OnModuleInit {
 		token: string,
 	): Promise<void> {
 		if (project.clickup_doc_id) return;
+
+		// Plan §A.2: persist clickup_doc_id IMMEDIATELY after createDoc succeeds.
+		// A page-creation failure later in the loop must NOT bypass the docId
+		// persistence — otherwise the daemon permanently regresses (Doc exists
+		// in CU but the daemon doesn't know about it; tryAppendChangelogPage
+		// becomes a permanent no-op). Each page failure is non-fatal and
+		// recorded in backfill_state.errors[] so operators can see partial work.
+		let docId: string;
 		try {
 			const doc = await this.clickup.createDoc(
 				teamId,
@@ -499,27 +507,74 @@ export class BackfillService implements OnModuleInit {
 				},
 				token,
 			);
-			for (const page of plan.doc.pages) {
-				try {
-					await this.clickup.createDocPage(
-						teamId,
-						doc.id,
-						{ name: page.name, content: page.markdown },
-						token,
-					);
-				} catch (err) {
-					this.log.debug(
-						`createDocPage(${page.name}) failed: ${(err as Error).message}`,
-					);
-				}
-			}
-			await this.prisma.$executeRawUnsafe(
-				`UPDATE clickup_tracker.projects SET clickup_doc_id = $1, updated_at = NOW() WHERE id = $2::uuid`,
-				doc.id,
-				project.id,
-			);
+			docId = doc.id;
 		} catch (err) {
 			this.log.warn(`createDoc failed: ${(err as Error).message}`);
+			await this.appendBackfillError(project.id, "createDoc", err);
+			return;
+		}
+
+		await this.prisma.$executeRawUnsafe(
+			`UPDATE clickup_tracker.projects SET clickup_doc_id = $1, updated_at = NOW() WHERE id = $2::uuid`,
+			docId,
+			project.id,
+		);
+
+		for (const page of plan.doc.pages) {
+			try {
+				await this.clickup.createDocPage(
+					teamId,
+					docId,
+					{ name: page.name, content: page.markdown },
+					token,
+				);
+			} catch (err) {
+				this.log.warn(
+					`createDocPage(${page.name}) failed: ${(err as Error).message}`,
+				);
+				await this.appendBackfillError(
+					project.id,
+					`createDocPage:${page.name}`,
+					err,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Append a structured entry to backfill_state.errors[]. Used by ensureDoc
+	 * (and any later step that wants to surface non-fatal failures via the
+	 * GET /:id/backfill endpoint instead of just log warns).
+	 */
+	private async appendBackfillError(
+		projectId: string,
+		op: string,
+		err: unknown,
+	): Promise<void> {
+		const message = err instanceof Error ? err.message : String(err);
+		try {
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+         SET backfill_state = jsonb_set(
+           COALESCE(backfill_state, '{}'::jsonb),
+           '{errors}',
+           COALESCE(backfill_state->'errors', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+             'op', $2::text,
+             'message', $3::text,
+             'at', NOW()::text
+           )),
+           true
+         ),
+         updated_at = NOW()
+         WHERE id = $1::uuid`,
+				projectId,
+				op,
+				message,
+			);
+		} catch (writeErr) {
+			this.log.debug(
+				`appendBackfillError(${op}) write failed: ${(writeErr as Error).message}`,
+			);
 		}
 	}
 
