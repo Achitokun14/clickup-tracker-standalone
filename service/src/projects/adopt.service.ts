@@ -69,11 +69,19 @@ const FOLDER_EMOJI_MAP: Record<string, string> = {
 	"📚": "knowledge",
 };
 
-const FOOTER_RX = /_Auto-imported by clickup-tracker\._/;
+// Footer literal emitted by hierarchy.buildCommitDescription:
+//   "_Auto-imported by clickup-tracker. Type: <type> · Epic: <epic> · Sprint: <sprintKey>_"
+// Match the leading sentinel; the rest of the footer is metadata we
+// don't currently parse but is the marker that says "this task is ours".
+const FOOTER_RX = /Auto-imported by clickup-tracker\./;
 const COMMIT_NAME_RX = /^\[(\d{4}-\d{2}-\d{2})\] (\w+)\((.*?)\): (.+)$/;
 const SPRINT_LIST_NAME_RX =
 	/Sprint\s+\d+\s+[—–-]\s+(\d{4}-\d{2}-\d{2})\s*[→→\->]+\s*(\d{4}-\d{2}-\d{2})/;
-const SHA_FOOTER_RX = /\b([a-f0-9]{7,40})\b/;
+// Anchor SHA extraction to the daemon's emitted "**Commit:** `abc1234`"
+// or "**Commit:** [\`abc1234\`](url)" lines so we don't accidentally
+// match a UUID, color hex, or unrelated 7-40-char hex run elsewhere
+// in the description.
+const SHA_COMMIT_LINE_RX = /\*\*Commit:\*\*[^`]*`([a-f0-9]{7,40})`/;
 
 @Injectable()
 export class AdoptService {
@@ -89,6 +97,25 @@ export class AdoptService {
 		if (!dto.clickupSpaceId) {
 			throw new BadRequestException("clickupSpaceId is required");
 		}
+
+		// Reject if a non-removed project row already exists at this
+		// (org, local_path). Returning a 409 with the existing projectId is
+		// kinder than letting the UNIQUE constraint produce a raw 500.
+		const existing = await this.prisma.$queryRawUnsafe<
+			Array<{ id: string; status: string }>
+		>(
+			`SELECT id, status FROM clickup_tracker.projects
+       WHERE organisation_id = $1::uuid AND local_path = $2 AND status <> 'removed'
+       LIMIT 1`,
+			orgId,
+			dto.localPath,
+		);
+		if (existing[0]) {
+			throw new BadRequestException(
+				`project already tracked at ${dto.localPath} (id=${existing[0].id}); use /clickup-remove first or pick a different localPath`,
+			);
+		}
+
 		const creds = await this.credentials.forOrg(orgId);
 
 		// Verify the Space exists and is reachable with these credentials.
@@ -285,8 +312,6 @@ export function parseSprintIsoWeek(listName: string): string | null {
 }
 
 function parseShaFromDescription(desc: string): string | null {
-	// Look for the first 7-40 char hex run (commit SHA in the description).
-	// Adoption is best-effort — we accept whatever the original daemon emitted.
-	const m = SHA_FOOTER_RX.exec(desc);
+	const m = SHA_COMMIT_LINE_RX.exec(desc);
 	return m ? m[1] : null;
 }

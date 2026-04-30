@@ -168,8 +168,15 @@ describe("AdoptService.adopt (Plan §B.2 + §B.3)", () => {
 			{
 				id: "T_AUTO",
 				name: "[2026-04-29] Feature(api): auto task",
-				markdown_description:
-					"Body\n\n_Auto-imported by clickup-tracker._\nSHA: abc1234\nFooter",
+				markdown_description: [
+					"**Contributor:** ali",
+					"",
+					"**Commit:** [`abc1234`](https://github.com/me/repo/commit/abc1234)",
+					"**Branch:** `main`",
+					"",
+					"---",
+					"_Auto-imported by clickup-tracker. Type: Feature · Epic: epic-api · Sprint: 2026-W17_",
+				].join("\n"),
 			},
 			{
 				id: "T_HUMAN",
@@ -187,6 +194,28 @@ describe("AdoptService.adopt (Plan §B.2 + §B.3)", () => {
 		expect(Object.values(result).flat).toBeDefined();
 		const taskIndex = (svc as any) && (cu as any); // shape sanity; below is the assertion that matters
 		expect(result.taskIndexCount).toBe(1);
+	});
+
+	it("rejects with 400 when local_path is already tracked (active row)", async () => {
+		const { svc, prisma, cu } = build();
+		cu.spaces = [{ id: "SPACE1", name: "X" }];
+		// Make the FakePrisma return an existing row at this path.
+		(prisma as any).$queryRawUnsafe = async (sql: string) => {
+			if (
+				sql.includes("FROM clickup_tracker.projects") &&
+				sql.includes("status <> 'removed'")
+			) {
+				return [{ id: "PROJECT_EXISTING", status: "active" }];
+			}
+			return [];
+		};
+		await expect(
+			svc.adopt("ORG1", {
+				localPath: "/repos/already-tracked",
+				displayName: "X",
+				clickupSpaceId: "SPACE1",
+			}),
+		).rejects.toThrow(/already tracked/);
 	});
 
 	it("404s when the Space is not in the workspace", async () => {
