@@ -364,7 +364,10 @@ export class SprintPlannerService {
 			);
 		}
 		const wk = isoWeekOf(new Date());
-		const sprintName = `Sprint ? — ${wk.startDate} → ${wk.endDate}`;
+		// Use the ISO week number as the ordinal so AdoptService can re-parse
+		// the name back into an isoWeek key on re-adoption (its regex
+		// requires `Sprint <digits> — <date> → <date>`).
+		const sprintName = `Sprint ${wk.week} — ${wk.startDate} → ${wk.endDate}`;
 		const list = await this.clickup.createListInFolder(
 			history.id,
 			sprintName,
