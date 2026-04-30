@@ -37,11 +37,25 @@ class FakePrisma {
 			return [{ inserted: true }] as unknown as T;
 		}
 		if (trimmed.startsWith("INSERT INTO clickup_tracker.git_events")) {
+			if (this.failGitInsertWithTeamUniqueViolation) {
+				throw new Error(
+					'duplicate key value violates unique constraint "git_events_team_sha_uniq"',
+				);
+			}
 			this.insertedEvents += 1;
 			return [{ id: `EVT${this.insertedEvents}` }] as unknown as T;
 		}
+		if (
+			trimmed.startsWith(
+				"SELECT id FROM clickup_tracker.git_events WHERE clickup_team_id",
+			)
+		) {
+			return [{ id: "EVT_PEER" }] as unknown as T;
+		}
 		return [] as unknown as T;
 	}
+
+	failGitInsertWithTeamUniqueViolation = false;
 
 	async $executeRawUnsafe(sql: string, ...params: unknown[]): Promise<number> {
 		this.calls.push({ sql, params });
@@ -321,6 +335,28 @@ describe("EventsService — per-repo Space lifecycle", () => {
 			{ id: "p1", git_default_branch: null },
 		);
 		expect(out).toBe("main");
+	});
+
+	it("ingestGit dedupes when peer daemon already recorded this SHA at the team level (Plan §B.4)", async () => {
+		const prisma = new FakePrisma(makeProject());
+		prisma.failGitInsertWithTeamUniqueViolation = true;
+		const { svc, clickup } = buildSvc(prisma);
+		const receipt = await svc.ingestGit(
+			"00000000-0000-0000-0000-000000000001",
+			makeDto({
+				commit_sha: "b".repeat(40),
+				message: "feat(api): same SHA committed by another dev",
+			}),
+			"peer-daemon-key",
+		);
+		expect(receipt.eventId).toBe("EVT_PEER");
+		expect(receipt.replayed).toBe(true);
+		expect(receipt.actions[0]).toMatchObject({
+			kind: "skipped",
+			reason: "peer_daemon_owns",
+		});
+		// CU emission must be skipped — the first daemon owns the task.
+		expect(clickup.calls.some((c) => c.method === "createTask")).toBe(false);
 	});
 
 	it("respects the clickup-skip marker", async () => {
