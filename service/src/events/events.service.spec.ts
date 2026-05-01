@@ -595,7 +595,7 @@ describe("EventsService — per-repo Space lifecycle", () => {
 			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-1");
 			expect(clickup.calls.length).toBe(0);
 			expect(receipt.actions[0].kind).toBe("skipped");
-			expect(receipt.actions[0].reason).toBe("status:auth-needed");
+			expect((receipt.actions[0] as any).reason).toBe("status:auth-needed");
 		});
 
 		it("project status='orphaned' short-circuits the same way", async () => {
@@ -604,7 +604,7 @@ describe("EventsService — per-repo Space lifecycle", () => {
 			const { svc, clickup } = buildSvc(prisma);
 			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-2");
 			expect(clickup.calls.length).toBe(0);
-			expect(receipt.actions[0].reason).toBe("status:orphaned");
+			expect((receipt.actions[0] as any).reason).toBe("status:orphaned");
 		});
 
 		it("a 401 from CU writes flips the project to auth-needed", async () => {
@@ -616,15 +616,159 @@ describe("EventsService — per-repo Space lifecycle", () => {
 				throw new (require("@nestjs/common").HttpException)("401", 401);
 			};
 			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-3");
-			expect(receipt.actions.some((a) => a.reason === "auth_needed")).toBe(
-				true,
-			);
+			expect(
+				receipt.actions.some((a) => (a as any).reason === "auth_needed"),
+			).toBe(true);
 			// Verify the SQL flip ran
 			const flipCall = prisma.calls.find(
 				(c) =>
 					typeof c.sql === "string" && c.sql.includes("status = 'auth-needed'"),
 			);
 			expect(flipCall).toBeDefined();
+		});
+	});
+
+	// ── Plan §C.3 — branch-deletion + file rename/delete ──────────────
+	describe("hook lifecycle extensions (Plan §C.3)", () => {
+		it("branch_deleted=true closes commit tasks for that branch", async () => {
+			const proj = makeProject({
+				task_index: {
+					[`commit:${"a".repeat(40)}`]: "T_OLD",
+					[`commit:${"b".repeat(40)}`]: "T_OLD2",
+				},
+			});
+			const prisma = new FakePrisma(proj);
+			// Stub the SHA lookup so the lifecycle finds both.
+			const origQuery = prisma.$queryRawUnsafe.bind(prisma);
+			(prisma as any).$queryRawUnsafe = async function (
+				sql: string,
+				...params: unknown[]
+			) {
+				if (sql.includes("SELECT commit_sha FROM clickup_tracker.git_events")) {
+					return [
+						{ commit_sha: "a".repeat(40) },
+						{ commit_sha: "b".repeat(40) },
+					];
+				}
+				return origQuery(sql, ...params);
+			};
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "0".repeat(40),
+				branch: "feature/done",
+				branch_deleted: true,
+			} as any);
+			const receipt = await svc.ingestGit(proj.id, dto, "key-bd-1");
+			const closes = clickup.calls.filter(
+				(c) =>
+					c.method === "setTaskStatus" && (c.args as any[])[1] === "Closed",
+			);
+			expect(closes.length).toBe(2);
+			expect(receipt.actions.some((a) => a.kind === "close_task")).toBe(true);
+		});
+
+		it("branch_deleted=true with no matching commits returns skipped", async () => {
+			const proj = makeProject();
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "0".repeat(40),
+				branch: "feature/never-existed",
+				branch_deleted: true,
+			} as any);
+			const receipt = await svc.ingestGit(proj.id, dto, "key-bd-2");
+			expect(clickup.calls.length).toBe(0);
+			expect(
+				receipt.actions.some(
+					(a) => (a as any).reason === "branch_deleted_no_tasks",
+				),
+			).toBe(true);
+		});
+
+		it("file rename appends a `**Renames:**` comment on the commit task", async () => {
+			const proj = makeProject();
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "1".repeat(40),
+				message: "refactor: rename helpers",
+				files_changed: [
+					{
+						path: "src/util/new.ts",
+						status: "renamed" as any,
+						prev_path: "src/util/old.ts",
+					} as any,
+					{ path: "src/util/keep.ts", status: "modified" as any },
+				],
+			});
+			await svc.ingestGit(proj.id, dto, "key-rn-1");
+			const renameComment = clickup.calls.find(
+				(c) =>
+					c.method === "addComment" &&
+					String((c.args as any[])[1]).includes("**Renames:**") &&
+					String((c.args as any[])[1]).includes("src/util/old.ts"),
+			);
+			expect(renameComment).toBeDefined();
+		});
+
+		it("file rename without prev_path is a silent no-op (forward-compat)", async () => {
+			const proj = makeProject();
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "2".repeat(40),
+				message: "refactor: rename without prev_path emit",
+				files_changed: [{ path: "src/util/new.ts", status: "renamed" as any }],
+			});
+			await svc.ingestGit(proj.id, dto, "key-rn-2");
+			const renameComment = clickup.calls.find(
+				(c) =>
+					c.method === "addComment" &&
+					String((c.args as any[])[1]).includes("**Renames:**"),
+			);
+			expect(renameComment).toBeUndefined();
+		});
+
+		it("file deletion closes path-anchored Open Work task", async () => {
+			const proj = makeProject({
+				task_index: { "path:src/util/legacy.ts": "T_LEGACY" },
+			});
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "3".repeat(40),
+				message: "chore: drop legacy helper",
+				files_changed: [
+					{ path: "src/util/legacy.ts", status: "deleted" as any },
+				],
+			});
+			await svc.ingestGit(proj.id, dto, "key-del-1");
+			const close = clickup.calls.find(
+				(c) =>
+					c.method === "setTaskStatus" &&
+					(c.args as any[])[0] === "T_LEGACY" &&
+					(c.args as any[])[1] === "Closed",
+			);
+			expect(close).toBeDefined();
+		});
+
+		it("file deletion with no path-anchor task is a no-op", async () => {
+			const proj = makeProject(); // empty task_index
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const dto = makeDto({
+				commit_sha: "4".repeat(40),
+				message: "chore: drop something nobody tracked",
+				files_changed: [
+					{ path: "src/util/random.ts", status: "deleted" as any },
+				],
+			});
+			await svc.ingestGit(proj.id, dto, "key-del-2");
+			const close = clickup.calls.find(
+				(c) =>
+					c.method === "setTaskStatus" && (c.args as any[])[1] === "Closed",
+			);
+			expect(close).toBeUndefined();
 		});
 	});
 });

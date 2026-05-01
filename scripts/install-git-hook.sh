@@ -92,7 +92,15 @@ msg=\$(git log -1 --format=%B)
 remote=\$(git remote get-url origin 2>/dev/null || echo "")
 
 # Files changed in this commit (path + status, no diff).
-files=\$(git diff-tree --no-commit-id --name-status -r "\${sha}" 2>/dev/null | awk '{ printf "{\"path\":\"%s\",\"status\":\"%s\"},\n", \$2, \$1 }' | sed 's/,\$//')
+# Plan §C.3 — emit prev_path on R (rename) lines + map status to the
+# long-form daemon DTO ('A'->'added', 'M'->'modified', 'D'->'deleted',
+# 'R*'->'renamed'). -M enables rename detection in diff-tree.
+files=\$(git diff-tree -M --no-commit-id --name-status -r "\${sha}" 2>/dev/null | awk '
+  \$1 == "A" { printf "{\"path\":\"%s\",\"status\":\"added\"},\n", \$2 }
+  \$1 == "M" { printf "{\"path\":\"%s\",\"status\":\"modified\"},\n", \$2 }
+  \$1 == "D" { printf "{\"path\":\"%s\",\"status\":\"deleted\"},\n", \$2 }
+  \$1 ~ /^R[0-9]+\$/ { printf "{\"path\":\"%s\",\"status\":\"renamed\",\"prev_path\":\"%s\"},\n", \$3, \$2 }
+' | sed 's/,\$//')
 
 # Client-side scope_config subdir filter — early-out so the daemon doesn't
 # even see commits that touch only out-of-scope paths. The daemon also

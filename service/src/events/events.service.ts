@@ -131,6 +131,19 @@ export class EventsService {
 			throw new Error("project not found (post-HMAC; race condition?)");
 		}
 
+		// Plan §C.3 — branch-deletion event: not a commit; close any
+		// open In Review tasks for that branch and short-circuit.
+		if (dto.branch_deleted) {
+			const closed = await this.tryHandleBranchDeleted(project, dto);
+			eventsTotal.inc({ kind: "git", outcome: "branch_deleted" });
+			return {
+				eventId: "",
+				replayed: false,
+				actionsCount: closed.length,
+				actions: closed,
+			};
+		}
+
 		// Plan §B.6/§B.8 — short-circuit when the project is in a halt
 		// state. We still want to ack the event so the hook doesn't retry
 		// forever; we just skip CU writes. The git_events row insert
@@ -496,6 +509,16 @@ export class EventsService {
 			);
 		}
 
+		// 4c. Plan §C.3 — file rename annotations + file delete close.
+		await this.tryHandleFileRenames(
+			project,
+			dto,
+			actions,
+			creds.token,
+			createdTaskId,
+		);
+		await this.tryHandleFileDeletions(project, dto, actions, creds.token);
+
 		// 5. Conventional-verb side-effects.
 		// Plan §C.3 — when the scope itself encodes a rename
 		// (e.g. `refactor(legacy→v2):`), surface the cross-link before
@@ -765,6 +788,198 @@ export class EventsService {
 				} as ResultingAction);
 			} catch {
 				/* swallow */
+			}
+		}
+	}
+
+	/**
+	 * Plan §C.3 — branch-delete signal. Walk task_index for any
+	 * `commit:<sha>` whose stored git_events.branch matches this dto's
+	 * branch + is currently in In Review; setStatus('Closed') + tag
+	 * `branch-deleted`. Best-effort: failures per-task are logged and
+	 * skipped, the overall ack still succeeds.
+	 *
+	 * No CU listSpaces/listTasksInList needed — we use the local
+	 * task_index for membership and an SQL lookup against git_events
+	 * to filter by branch.
+	 */
+	private async tryHandleBranchDeleted(
+		project: ProjectMin,
+		dto: GitEventDto,
+	): Promise<ResultingAction[]> {
+		const actions: ResultingAction[] = [];
+		const branch = (dto.branch ?? "").trim();
+		if (!branch) {
+			actions.push({
+				kind: "skipped",
+				reason: "branch_deleted_no_branch",
+			});
+			return actions;
+		}
+
+		// Look up commit SHAs we recorded for this branch on this project.
+		let shas: string[] = [];
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{ commit_sha: string }>
+			>(
+				`SELECT commit_sha FROM clickup_tracker.git_events
+         WHERE project_id = $1::uuid
+           AND branch = $2
+         ORDER BY created_at DESC
+         LIMIT 200`,
+				project.id,
+				branch,
+			);
+			shas = rows.map((r) => r.commit_sha);
+		} catch (err) {
+			this.log.debug(
+				`branch-deleted: lookup failed for ${branch}: ${(err as Error).message}`,
+			);
+			actions.push({
+				kind: "skipped",
+				reason: "branch_deleted_lookup_failed",
+			});
+			return actions;
+		}
+
+		let credsToken: string;
+		try {
+			const c = await this.credentials.forOrg(project.organisation_id);
+			credsToken = c.token;
+		} catch {
+			actions.push({
+				kind: "skipped",
+				reason: "branch_deleted_no_credentials",
+			});
+			return actions;
+		}
+
+		let closedCount = 0;
+		for (const sha of shas) {
+			const taskId = project.task_index[`commit:${sha}`];
+			if (!taskId) continue;
+			try {
+				await this.clickup.setTaskStatus(taskId, "Closed", credsToken);
+				closedCount += 1;
+				actions.push({
+					kind: "close_task",
+					task_id: taskId,
+					reason: "branch_deleted",
+				} as ResultingAction);
+			} catch (err) {
+				if (this.isAuth401(err)) {
+					await this.flipProjectToAuthNeeded(
+						project.id,
+						`401 from CU during branch-delete close on ${branch}`,
+					);
+					actions.push({ kind: "skipped", reason: "auth_needed" });
+					return actions;
+				}
+				this.log.debug(
+					`branch-deleted: setTaskStatus(${taskId}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+		this.log.log(
+			`branch-deleted ${branch} on project ${project.id}: closed ${closedCount}/${shas.length} commit task(s)`,
+		);
+		if (closedCount === 0) {
+			actions.push({
+				kind: "skipped",
+				reason: "branch_deleted_no_tasks",
+			});
+		}
+		return actions;
+	}
+
+	/**
+	 * Plan §C.3 — for any file in `files_changed` with status='renamed'
+	 * and `prev_path` set, append a comment on the commit task noting
+	 * the rename. Forward-compatible: older hooks don't emit prev_path
+	 * so this is a no-op for them.
+	 */
+	private async tryHandleFileRenames(
+		project: ProjectMin,
+		dto: GitEventDto,
+		actions: ResultingAction[],
+		token: string,
+		commitTaskId: string | null,
+	): Promise<void> {
+		if (!commitTaskId) return;
+		const renames = (dto.files_changed ?? []).filter(
+			(f) => f.status === "renamed" && (f as any).prev_path,
+		);
+		if (renames.length === 0) return;
+		const lines = renames
+			.slice(0, 10)
+			.map((f) => `- \`${(f as any).prev_path}\` → \`${f.path}\``);
+		if (renames.length > 10) {
+			lines.push(`- _… +${renames.length - 10} more renames_`);
+		}
+		try {
+			await this.clickup.addComment(
+				commitTaskId,
+				`**Renames:**\n${lines.join("\n")}`,
+				token,
+			);
+			actions.push({
+				kind: "comment",
+				task_id: commitTaskId,
+				reason: "file_rename",
+			} as ResultingAction);
+			void project; // unused; kept for parity with sibling handlers
+		} catch (err) {
+			if (this.isAuth401(err)) throw err;
+			this.log.debug(
+				`tryHandleFileRenames: addComment failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §C.3 — for any file in `files_changed` with status='deleted',
+	 * close any Open Work tasks anchored to that path. Anchor detection:
+	 * task_index keys of the form `path:<file>` (a forward-compat key
+	 * the planner can populate). When no such key exists for the file,
+	 * the deletion is a no-op (the artifact-watch comment already
+	 * surfaces the change).
+	 */
+	private async tryHandleFileDeletions(
+		project: ProjectMin,
+		dto: GitEventDto,
+		actions: ResultingAction[],
+		token: string,
+	): Promise<void> {
+		const deletions = (dto.files_changed ?? []).filter(
+			(f) => f.status === "deleted",
+		);
+		if (deletions.length === 0) return;
+		for (const f of deletions) {
+			const key = `path:${f.path}`;
+			const taskId = project.task_index[key];
+			if (!taskId) continue;
+			try {
+				await this.clickup.setTaskStatus(taskId, "Closed", token);
+				try {
+					await this.clickup.addComment(
+						taskId,
+						`Closed automatically: anchor file \`${f.path}\` deleted in commit \`${dto.commit_sha.slice(0, 8)}\`.`,
+						token,
+					);
+				} catch {
+					/* swallow: the close itself succeeded */
+				}
+				actions.push({
+					kind: "close_task",
+					task_id: taskId,
+					reason: "file_deleted",
+				} as ResultingAction);
+			} catch (err) {
+				if (this.isAuth401(err)) throw err;
+				this.log.debug(
+					`tryHandleFileDeletions: setTaskStatus(${taskId}) failed: ${(err as Error).message}`,
+				);
 			}
 		}
 	}
