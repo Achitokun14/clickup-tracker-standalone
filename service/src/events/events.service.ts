@@ -16,7 +16,11 @@ import type {
 import { isoWeekOf } from "../util/iso-week";
 import { parseGitRemote, type ParsedGitRemote } from "../util/git-remote-parse";
 import { classifyArtifact, normalizeAuthor } from "../util/classify";
-import { normaliseScope, parseConventional } from "./conventional";
+import {
+	normaliseScope,
+	parseConventional,
+	parseScopeRename,
+} from "./conventional";
 import type { GitEventDto, PromptEventDto } from "./dto/git-event.dto";
 
 export interface EventReceipt {
@@ -445,7 +449,22 @@ export class EventsService {
 		}
 
 		// 5. Conventional-verb side-effects.
-		if (cc.type === "fix" && cc.scope) {
+		// Plan §C.3 — when the scope itself encodes a rename
+		// (e.g. `refactor(legacy→v2):`), surface the cross-link before
+		// fix/feat handlers; we never close on a rename, only annotate.
+		const rename = parseScopeRename(cc.scope);
+		if (rename) {
+			await this.tryHandleScopeRename(
+				project,
+				rename.from,
+				rename.to,
+				dto.commit_sha,
+				cc.subject,
+				actions,
+				creds.token,
+				createdTaskId,
+			);
+		} else if (cc.type === "fix" && cc.scope) {
 			await this.tryCloseTaskByScope(
 				project,
 				cc.scope,
@@ -609,6 +628,96 @@ export class EventsService {
 			this.log.debug(
 				`setTaskStatus(${status}) on ${taskId} failed: ${(err as Error).message}`,
 			);
+		}
+	}
+
+	/**
+	 * Plan §C.3 — handle `refactor(old→new):` scope renames. We never
+	 * close tasks on a rename (the work isn't done — it's relocated);
+	 * we cross-link old + new scope tasks and tag both for discovery.
+	 *
+	 * Best-effort:
+	 *   - tag both tasks `scope-renamed` (CU dedupes tag adds)
+	 *   - comment on each linking to the other + this commit
+	 *   - if the new scope has no task yet, just comment on the old one
+	 *     and tag the commit task itself for traceability
+	 */
+	private async tryHandleScopeRename(
+		project: ProjectMin,
+		fromScope: string,
+		toScope: string,
+		sha: string,
+		subject: string,
+		actions: ResultingAction[],
+		token: string,
+		commitTaskId: string | null,
+	): Promise<void> {
+		const oldId = this.findTaskByScope(project, fromScope);
+		const newId = this.findTaskByScope(project, toScope);
+		const shaShort = sha.slice(0, 8);
+
+		const stamp = (where: "old" | "new", peerId: string | null): string => {
+			const peer = peerId
+				? `Linked task: ${peerId}`
+				: "_(no task tracked under that scope yet)_";
+			const direction =
+				where === "old"
+					? `${fromScope} → ${toScope}`
+					: `${toScope} ← ${fromScope}`;
+			return [
+				`**Scope renamed:** \`${direction}\``,
+				`**Commit:** \`${shaShort}\` — ${subject}`,
+				peer,
+			].join("\n");
+		};
+
+		const tagPair: Array<[string, string]> = [];
+		if (oldId) tagPair.push([oldId, "scope-renamed"]);
+		if (newId) tagPair.push([newId, "scope-renamed"]);
+
+		for (const [taskId, tag] of tagPair) {
+			try {
+				await this.clickup.addTagToTask(taskId, tag, token);
+			} catch (err) {
+				this.log.debug(
+					`addTagToTask(${tag}) on ${taskId} failed: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		if (oldId) {
+			try {
+				await this.clickup.addComment(oldId, stamp("old", newId), token);
+				actions.push({ kind: "comment", task_id: oldId } as ResultingAction);
+			} catch {
+				/* swallow */
+			}
+		}
+		if (newId && newId !== oldId) {
+			try {
+				await this.clickup.addComment(newId, stamp("new", oldId), token);
+				actions.push({ kind: "comment", task_id: newId } as ResultingAction);
+			} catch {
+				/* swallow */
+			}
+		}
+
+		// If neither side has a tracked task yet, leave a breadcrumb on the
+		// commit task itself so the rename isn't lost.
+		if (!oldId && !newId && commitTaskId) {
+			try {
+				await this.clickup.addComment(
+					commitTaskId,
+					`**Scope renamed:** \`${fromScope} → ${toScope}\` _(no tracked tasks under either scope yet)_`,
+					token,
+				);
+				actions.push({
+					kind: "comment",
+					task_id: commitTaskId,
+				} as ResultingAction);
+			} catch {
+				/* swallow */
+			}
 		}
 	}
 
