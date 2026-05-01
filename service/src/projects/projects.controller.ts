@@ -140,6 +140,19 @@ export class ProjectsController {
     const isDry = dryRun !== 'false'; // default true
     return this.repair.repairRouting(id, isDry);
   }
+
+  /**
+   * Plan §B.6 — flip a project from `auth-needed` back to `active`
+   * after operator rotates env credentials. The 401 detection path
+   * (in EventsService etc) sets `auth-needed`; this endpoint clears it.
+   *
+   * Idempotent: returns `flipped: false` with the current status when
+   * the project isn't in `auth-needed`.
+   */
+  @Post(':id/refresh-credentials')
+  async refreshCredentials(@Req() req: any, @Param('id') id: string) {
+    return this.projects.clearAuthNeeded(orgIdOrThrow(req), id);
+  }
 }
 
 function orgIdOrThrow(req: any): string {

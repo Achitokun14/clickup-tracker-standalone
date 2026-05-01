@@ -444,6 +444,71 @@ export class ProjectsService {
 		return rows[0];
 	}
 
+	/**
+	 * Plan §B.6 — flip a project to `auth-needed` when its CU writes
+	 * fail with 401. The daemon's other write paths filter on
+	 * `status='active'` so this halts emission without ripping out the
+	 * project row. Idempotent: re-flipping a project already in
+	 * `auth-needed` is a no-op (the WHERE clause filters).
+	 *
+	 * Recovery: operator updates env credentials + calls
+	 * `POST /projects/:id/refresh-credentials` (which calls
+	 * `clearAuthNeeded`).
+	 */
+	async flipToAuthNeeded(projectId: string, reason: string): Promise<void> {
+		try {
+			const r = await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+         SET status = 'auth-needed', updated_at = NOW()
+         WHERE id = $1::uuid AND status = 'active'`,
+				projectId,
+			);
+			if (r > 0) {
+				this.log.warn(`flipped project ${projectId} → auth-needed (${reason})`);
+			}
+		} catch (err) {
+			this.log.warn(
+				`flipToAuthNeeded(${projectId}) failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §B.6 — flip a project back to `active` after operator-managed
+	 * credential rotation. Pairs with `flipToAuthNeeded`.
+	 */
+	async clearAuthNeeded(
+		orgId: string,
+		projectId: string,
+	): Promise<{ flipped: boolean; status: string }> {
+		const rows = await this.prisma.$queryRawUnsafe<Array<{ status: string }>>(
+			`UPDATE clickup_tracker.projects
+       SET status = 'active', updated_at = NOW()
+       WHERE organisation_id = $1::uuid
+         AND id = $2::uuid
+         AND status = 'auth-needed'
+       RETURNING status`,
+			orgId,
+			projectId,
+		);
+		if (rows.length === 0) {
+			// Either the project doesn't exist, doesn't belong to this org,
+			// or wasn't in auth-needed. Look up current status for the
+			// caller's benefit.
+			const probe = await this.prisma.$queryRawUnsafe<
+				Array<{ status: string }>
+			>(
+				`SELECT status FROM clickup_tracker.projects
+         WHERE organisation_id = $1::uuid AND id = $2::uuid`,
+				orgId,
+				projectId,
+			);
+			return { flipped: false, status: probe[0]?.status ?? "missing" };
+		}
+		this.log.log(`cleared auth-needed on project ${projectId}`);
+		return { flipped: true, status: rows[0].status };
+	}
+
 	async remove(
 		orgId: string,
 		projectId: string,
