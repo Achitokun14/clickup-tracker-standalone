@@ -183,6 +183,64 @@ export class SyncService implements OnModuleInit {
 				history_item_id: row.history_item_id,
 			}),
 		);
+
+		// Plan §C.3 — taskCommentPosted PR-comment hooks. Heuristic match
+		// on common GitHub/GitLab/Bitbucket bot phrasing so a CU comment
+		// like "PR opened: #42" or "PR merged" auto-tags / closes the
+		// commit task. Best-effort: silent skip on credential or API
+		// failures (the comment is already in CU; this is just an
+		// annotation pass).
+		if (row.event_type === "taskCommentPosted") {
+			const verdict = classifyPrComment(extractCommentText(row.payload));
+			if (verdict !== "none") {
+				await this.applyPrCommentAction(owning.id, row.task_id, verdict);
+			}
+		}
+	}
+
+	private async applyPrCommentAction(
+		projectId: string,
+		taskId: string,
+		verdict: "open" | "merged",
+	): Promise<void> {
+		let token: string;
+		try {
+			const project = await this.loadProjectMin(projectId);
+			if (!project) return;
+			const creds = await this.credentials.forOrg(project.organisation_id);
+			token = creds.token;
+		} catch (err) {
+			this.log.debug(
+				`pr-comment skip: no creds for project ${projectId} (${(err as Error).message})`,
+			);
+			return;
+		}
+
+		try {
+			if (verdict === "open") {
+				await this.clickup.addTagToTask(taskId, "pr-open", token);
+				this.log.debug(`pr-comment: tagged ${taskId} pr-open`);
+			} else {
+				await this.clickup.setTaskStatus(taskId, "Done", token);
+				this.log.debug(`pr-comment: closed ${taskId} (PR merged)`);
+			}
+		} catch (err) {
+			this.log.debug(
+				`pr-comment apply failed for ${taskId}: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	private async loadProjectMin(
+		projectId: string,
+	): Promise<{ organisation_id: string } | null> {
+		const rows = await this.prisma.$queryRawUnsafe<
+			Array<{ organisation_id: string }>
+		>(
+			`SELECT organisation_id FROM clickup_tracker.projects WHERE id = $1::uuid`,
+			projectId,
+		);
+		return rows[0] ?? null;
 	}
 
 	private async handlePromptEvent(payload: SyncJobPayload): Promise<void> {
@@ -434,4 +492,51 @@ export class SyncService implements OnModuleInit {
 		}
 		return lines.join("\n");
 	}
+}
+
+// ── Plan §C.3 pure helpers (PR-comment classification) ─────────────────
+
+/**
+ * Pull a comment-text-ish string out of a CU webhook payload. CU sends
+ * different shapes for taskCommentPosted depending on auth path; defend
+ * against all the shapes we've seen empirically + likely undocumented
+ * variants.
+ */
+export function extractCommentText(payload: unknown): string {
+	if (!payload || typeof payload !== "object") return "";
+	const p = payload as Record<string, any>;
+	const candidates: unknown[] = [
+		p.comment_text,
+		p.comment?.text,
+		p.comment?.text_content,
+		p.comment?.comment_text,
+		p.history_items?.[0]?.comment?.text,
+		p.history_items?.[0]?.after?.text,
+	];
+	for (const c of candidates) {
+		if (typeof c === "string" && c.trim()) return c.trim();
+	}
+	return "";
+}
+
+/**
+ * Heuristic match on a CU comment for PR-related events posted by
+ * GitHub/GitLab/Bitbucket integration bots. Returns:
+ *   - "merged" if any "PR merged" / "merged pull request" pattern hits
+ *   - "open" if any "PR opened" / "PR created" / "opened pull request"
+ *   - "none" otherwise
+ *
+ * Intentionally lenient (case-insensitive). Merged outranks open: a
+ * single "PR opened then merged" comment block triggers a close.
+ */
+export function classifyPrComment(text: string): "open" | "merged" | "none" {
+	if (!text) return "none";
+	const t = text.toLowerCase();
+	const mergedRx =
+		/\b(?:pr|pull request)\s+merged\b|\bmerged\s+pull\s+request\b/;
+	const openRx =
+		/\b(?:pr|pull request)\s+(?:opened|created)\b|\bopened\s+pull\s+request\b/;
+	if (mergedRx.test(t)) return "merged";
+	if (openRx.test(t)) return "open";
+	return "none";
 }
