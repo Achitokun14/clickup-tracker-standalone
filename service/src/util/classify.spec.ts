@@ -1,11 +1,13 @@
 import {
 	AUTHOR_MAP,
 	assignPriority,
+	classifyArtifact,
 	classifyEpic,
 	classifyType,
 	deriveTags,
 	estimateMinutes,
 	KEYWORD_CLUSTERS,
+	normaliseFileStatus,
 	normalizeAuthor,
 	priorityToCu,
 	TAG_KEYWORDS,
@@ -177,5 +179,90 @@ describe("normalizeAuthor", () => {
 	});
 	it("ported AUTHOR_MAP contains the canonical 5 entries", () => {
 		expect(Object.keys(AUTHOR_MAP).length).toBe(5);
+	});
+});
+
+describe("classifyArtifact (Plan §C.5)", () => {
+	it.each<[string, string]>([
+		// adr
+		["docs/adr/0001-use-postgres.md", "adr"],
+		["docs/adrs/0042-rename.mdx", "adr"],
+		["packages/foo/adr/0007-thing.md", "adr"],
+		["ARCHITECTURE.md", "adr"],
+		// doc
+		["README.md", "doc"],
+		["CHANGELOG", "doc"],
+		["docs/getting-started.md", "doc"],
+		["docs/api/v1.rst", "doc"],
+		// infra
+		["Dockerfile", "infra"],
+		["Dockerfile.prod", "infra"],
+		["docker-compose.yml", "infra"],
+		["docker-compose.staging.yaml", "infra"],
+		[".github/workflows/ci.yml", "infra"],
+		["terraform/vpc.tf", "infra"],
+		["k8s/deploy.yaml", "infra"],
+		["Makefile", "infra"],
+		// dependency
+		["package.json", "dependency"],
+		["pyproject.toml", "dependency"],
+		["Cargo.toml", "dependency"],
+		["go.mod", "dependency"],
+		["requirements.txt", "dependency"],
+		["requirements-dev.txt", "dependency"],
+		// config-schema
+		[".env.example", "config-schema"],
+		["config/app.example", "config-schema"],
+		["schemas/user.schema.json", "config-schema"],
+		// submodule
+		[".gitmodules", "submodule"],
+		// generated suppression
+		["dist/index.js", "generated"],
+		["node_modules/foo/index.js", "generated"],
+		[".next/server/page.js", "generated"],
+		["coverage/lcov.info", "generated"],
+		["yarn.lock", "generated"],
+		["package-lock.json", "generated"],
+		["pnpm-lock.yaml", "generated"],
+		["go.sum", "generated"],
+		// binary by extension
+		["assets/logo.png", "binary-resource"],
+		["docs/diagram.pdf", "binary-resource"],
+		["fonts/inter.woff2", "binary-resource"],
+		// code (fallthrough)
+		["src/api.ts", "code"],
+		["lib/foo.py", "code"],
+		["pkg/foo/bar.go", "code"],
+	])("classifies %s as %s", (path, expected) => {
+		expect(classifyArtifact(path)).toBe(expected);
+	});
+
+	it("treats files >100KB without recognised extension as binary-resource", () => {
+		expect(classifyArtifact("data/blob.bin", undefined, 250_000)).toBe(
+			"binary-resource",
+		);
+	});
+
+	it("does not treat 50KB code files as binary-resource", () => {
+		expect(classifyArtifact("src/big.ts", undefined, 50_000)).toBe("code");
+	});
+});
+
+describe("normaliseFileStatus", () => {
+	it("accepts both short codes and DTO long names", () => {
+		expect(normaliseFileStatus("A")).toBe("A");
+		expect(normaliseFileStatus("added")).toBe("A");
+		expect(normaliseFileStatus("M")).toBe("M");
+		expect(normaliseFileStatus("modified")).toBe("M");
+		expect(normaliseFileStatus("D")).toBe("D");
+		expect(normaliseFileStatus("deleted")).toBe("D");
+		expect(normaliseFileStatus("R")).toBe("R");
+		expect(normaliseFileStatus("R100")).toBe("R");
+		expect(normaliseFileStatus("renamed")).toBe("R");
+	});
+	it("returns null for empty / unrecognised", () => {
+		expect(normaliseFileStatus(undefined)).toBeNull();
+		expect(normaliseFileStatus("")).toBeNull();
+		expect(normaliseFileStatus("X")).toBeNull();
 	});
 });

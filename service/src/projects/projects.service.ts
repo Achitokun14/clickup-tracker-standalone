@@ -143,16 +143,27 @@ export class ProjectsService {
 	): Promise<RegisterResult> {
 		if (!dto.localPath) throw new BadRequestException("localPath required");
 
-		// Idempotency: same (org, localPath) and still active/paused — return existing.
-		// `removed` rows are ignored here so users can re-register a path they
-		// previously untracked. The stale row is cleared before INSERT below.
+		// Idempotency: same (org, localPath) OR (org, git_remote_url) and still
+		// active/paused — return existing. Plan §B.7 worktree dedupe: a user
+		// who clones the same repo to a second path (worktree, mirror, fresh
+		// clone) gets routed back to the original project row instead of
+		// creating a duplicate Space. `removed` rows are ignored here so
+		// users can re-register a path they previously untracked. The stale
+		// row is cleared before INSERT below. Prefers the exact local_path
+		// match when both could apply.
 		const existing = await this.prisma.$queryRawUnsafe<ProjectRow[]>(
 			`SELECT * FROM clickup_tracker.projects
        WHERE organisation_id = $1::uuid
-         AND local_path = $2
-         AND status <> 'removed'`,
+         AND status <> 'removed'
+         AND (local_path = $2
+              OR ($3::text IS NOT NULL
+                  AND $3::text <> ''
+                  AND git_remote_url = $3::text))
+       ORDER BY (local_path = $2) DESC NULLS LAST
+       LIMIT 1`,
 			orgId,
 			dto.localPath,
+			dto.gitRemoteUrl ?? null,
 		);
 		if (existing.length > 0) {
 			const row = existing[0];
