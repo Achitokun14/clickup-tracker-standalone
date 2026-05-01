@@ -6,6 +6,7 @@ import {
 	Logger,
 	UnauthorizedException,
 } from "@nestjs/common";
+import { currentPriority } from "./priority-context";
 import { ClickUpRateLimiter, bucketKeyForToken } from "./rate-limiter";
 
 const V2_BASE =
@@ -785,9 +786,12 @@ export class ClickUpDirectService {
 			attempt += 1;
 
 			if (isMutation) {
-				const waited = await this.limiter.acquire(bucketKey);
+				const priority = currentPriority() ?? "normal";
+				const waited = await this.limiter.acquire(bucketKey, priority);
 				if (waited > 200) {
-					this.log.debug(`limiter: waited ${waited}ms before ${method} ${url}`);
+					this.log.debug(
+						`limiter[${priority}]: waited ${waited}ms before ${method} ${url}`,
+					);
 				}
 			}
 

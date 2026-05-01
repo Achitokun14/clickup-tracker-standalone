@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import type { ClickUpTaskFull } from "../clickup/clickup-direct.service";
+import { runWithPriority } from "../clickup/priority-context";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "./audit.service";
@@ -104,6 +105,16 @@ export class GroomerService {
 	) {}
 
 	async groom(projectId: string, dryRun: boolean): Promise<GroomPlan> {
+		// Plan §C.8 — autonomous SCRUM never preempts user/lifecycle traffic.
+		return runWithPriority("scrum", () =>
+			this.groomInternal(projectId, dryRun),
+		);
+	}
+
+	private async groomInternal(
+		projectId: string,
+		dryRun: boolean,
+	): Promise<GroomPlan> {
 		const project = await this.loadProject(projectId);
 		if (!project) throw new NotFoundException("project not found");
 		const cfg = mergeGroomConfig(project.scrum_config ?? {});

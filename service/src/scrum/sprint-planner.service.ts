@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import type { ClickUpTaskFull } from "../clickup/clickup-direct.service";
+import { runWithPriority } from "../clickup/priority-context";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isoWeekOf } from "../util/iso-week";
@@ -86,6 +87,16 @@ export class SprintPlannerService {
 	) {}
 
 	async planSprint(projectId: string, dryRun: boolean): Promise<SprintPlan> {
+		// Plan §C.8 — autonomous SCRUM never preempts user/lifecycle traffic.
+		return runWithPriority("scrum", () =>
+			this.planSprintInternal(projectId, dryRun),
+		);
+	}
+
+	private async planSprintInternal(
+		projectId: string,
+		dryRun: boolean,
+	): Promise<SprintPlan> {
 		const project = await this.loadProject(projectId);
 		if (!project) throw new NotFoundException("project not found");
 		const cfg = mergeDefaults(project.scrum_config ?? {});

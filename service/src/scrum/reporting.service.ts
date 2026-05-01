@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import type { ClickUpTaskFull } from "../clickup/clickup-direct.service";
+import { runWithPriority } from "../clickup/priority-context";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isoWeekOf, ymd } from "../util/iso-week";
@@ -106,6 +107,16 @@ export class ReportingService {
 	// ── standup ────────────────────────────────────────────────────────
 
 	async generateStandup(
+		projectId: string,
+		dryRun: boolean,
+	): Promise<StandupReport> {
+		// Plan §C.8 — autonomous SCRUM never preempts user/lifecycle traffic.
+		return runWithPriority("scrum", () =>
+			this.generateStandupInternal(projectId, dryRun),
+		);
+	}
+
+	private async generateStandupInternal(
 		projectId: string,
 		dryRun: boolean,
 	): Promise<StandupReport> {
@@ -247,6 +258,16 @@ export class ReportingService {
 	// ── retro ──────────────────────────────────────────────────────────
 
 	async generateRetro(
+		projectId: string,
+		dryRun: boolean,
+	): Promise<RetroReport> {
+		// Plan §C.8 — autonomous SCRUM never preempts user/lifecycle traffic.
+		return runWithPriority("scrum", () =>
+			this.generateRetroInternal(projectId, dryRun),
+		);
+	}
+
+	private async generateRetroInternal(
 		projectId: string,
 		dryRun: boolean,
 	): Promise<RetroReport> {
