@@ -384,6 +384,95 @@ export function estimateMinutes(
 	return base + locBonus + fileBonus;
 }
 
+// ---------- per-file artifact classifier (Plan §C.5) ----------
+
+/**
+ * Coarse kinds the daemon dispatches on. The classifier picks ONE per
+ * file path; the per-kind handlers in events.service decide what side
+ * effect (comment, follow-up task, watch-list append) is appropriate.
+ *
+ * `generated` is special: it suppresses all side effects (build
+ * outputs, lock files, vendored deps don't deserve a story).
+ */
+export type ArtifactKind =
+	| "adr"
+	| "doc"
+	| "infra"
+	| "dependency"
+	| "config-schema"
+	| "binary-resource"
+	| "submodule"
+	| "generated"
+	| "code";
+
+const GENERATED_DIR_RX =
+	/^(dist|build|out|node_modules|\.next|\.nuxt|\.turbo|coverage|target|__pycache__|\.pytest_cache|\.venv|venv|vendor)\//;
+const LOCKFILE_RX =
+	/^(yarn\.lock|package-lock\.json|pnpm-lock\.yaml|bun\.lockb|poetry\.lock|Pipfile\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|go\.sum)$/;
+const ADR_PATH_RX =
+	/^(?:docs\/(?:adr|adrs|decisions)\/.*\.mdx?|.*\/adr\/.*\.mdx?|architecture\.mdx?|adr-[\w-]+\.mdx?)$/i;
+const DOC_TOPLEVEL_RX =
+	/^(README|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT|SECURITY|HISTORY|UPGRADING|MAINTAINERS)([._].*)?$/i;
+const DOC_PATH_RX = /^docs\/.*\.(md|mdx|rst|adoc)$/i;
+const INFRA_PATH_RX =
+	/^(Dockerfile.*|docker-compose.*\.ya?ml|\.github\/workflows\/.*\.ya?ml|\.gitlab-ci\.ya?ml|terraform\/.*\.tf|.*\.tf|kubernetes\/.*\.ya?ml|k8s\/.*\.ya?ml|helm\/.*|\.dockerignore|Makefile)$/i;
+const DEPENDENCY_MANIFEST_RX =
+	/^(package\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|Gemfile|requirements(?:-[\w-]+)?\.txt|setup\.py|setup\.cfg)$/;
+const CONFIG_SCHEMA_RX =
+	/(^|\/)(\.env\.example|.*\.example|.*\.schema\.json)$/i;
+const BINARY_EXT_RX =
+	/\.(png|jpe?g|gif|webp|svg|pdf|zip|tar|gz|tgz|bz2|7z|rar|woff2?|ttf|eot|otf|ico|mp[34]|wav|ogg|flac|webm|mov|mkv|avi|psd|ai|sketch|fig|xls[xm]?|docx?|pptx?)$/i;
+
+export function classifyArtifact(
+	filePath: string,
+	_status?: string,
+	fileSizeBytes?: number,
+): ArtifactKind {
+	const p = filePath.replace(/^\.\//, "");
+
+	// Generated suppression first.
+	if (GENERATED_DIR_RX.test(p)) return "generated";
+	if (LOCKFILE_RX.test(p)) return "generated";
+
+	if (ADR_PATH_RX.test(p)) return "adr";
+
+	if (DOC_TOPLEVEL_RX.test(p) || DOC_PATH_RX.test(p)) return "doc";
+
+	if (INFRA_PATH_RX.test(p)) return "infra";
+
+	if (DEPENDENCY_MANIFEST_RX.test(p)) return "dependency";
+
+	if (CONFIG_SCHEMA_RX.test(p)) return "config-schema";
+
+	if (p === ".gitmodules") return "submodule";
+
+	// Binary heuristic — extension match OR file > 100KB.
+	if (BINARY_EXT_RX.test(p)) return "binary-resource";
+	if (typeof fileSizeBytes === "number" && fileSizeBytes > 100_000) {
+		return "binary-resource";
+	}
+
+	return "code";
+}
+
+/**
+ * Normalise the various status shapes the daemon receives:
+ *   hook short codes ("A", "M", "D", "R", "R100", ...)
+ *   DTO long names   ("added", "modified", "deleted", "renamed")
+ * Returns the short code or null when unrecognised.
+ */
+export function normaliseFileStatus(
+	s: string | undefined,
+): "A" | "M" | "D" | "R" | null {
+	if (!s) return null;
+	const u = s.toUpperCase();
+	if (u.startsWith("A")) return "A";
+	if (u.startsWith("M")) return "M";
+	if (u.startsWith("D")) return "D";
+	if (u.startsWith("R")) return "R";
+	return null;
+}
+
 // ---------- author normalisation ----------
 
 export function normalizeAuthor(

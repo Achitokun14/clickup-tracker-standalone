@@ -359,6 +359,59 @@ describe("EventsService — per-repo Space lifecycle", () => {
 		expect(clickup.calls.some((c) => c.method === "createTask")).toBe(false);
 	});
 
+	it("appends a single Artifact watch comment when the commit touches non-code files (Plan §C.5)", async () => {
+		const prisma = new FakePrisma(makeProject());
+		const { svc, clickup } = buildSvc(prisma);
+		await svc.ingestGit(
+			"00000000-0000-0000-0000-000000000001",
+			makeDto({
+				commit_sha: "c".repeat(40),
+				message: "chore(deps): bump axios + update CI image",
+				files_changed: [
+					{ path: "package.json", status: "modified" },
+					{ path: ".github/workflows/ci.yml", status: "modified" },
+					{ path: "README.md", status: "modified" },
+					{ path: "src/api.ts", status: "modified" },
+					{ path: "yarn.lock", status: "modified" },
+				],
+			}),
+			"key-artifacts",
+		);
+		const comment = clickup.calls.find((c) => c.method === "addComment");
+		expect(comment).toBeDefined();
+		const text = String((comment!.args as any[])[1]);
+		expect(text).toContain("Artifact watch");
+		expect(text).toContain("dependency × 1");
+		expect(text).toContain("infra × 1");
+		expect(text).toContain("doc × 1");
+		// generated (yarn.lock) + code (src/api.ts) MUST NOT appear.
+		expect(text).not.toContain("generated");
+		expect(text).not.toContain("code ×");
+	});
+
+	it("does NOT post an Artifact watch comment when only code files change", async () => {
+		const prisma = new FakePrisma(makeProject());
+		const { svc, clickup } = buildSvc(prisma);
+		await svc.ingestGit(
+			"00000000-0000-0000-0000-000000000001",
+			makeDto({
+				commit_sha: "d".repeat(40),
+				message: "feat(api): rename handler",
+				files_changed: [
+					{ path: "src/api.ts", status: "modified" },
+					{ path: "src/util.ts", status: "modified" },
+				],
+			}),
+			"key-code-only",
+		);
+		const comments = clickup.calls.filter(
+			(c) =>
+				c.method === "addComment" &&
+				String((c.args as any[])[1]).includes("Artifact watch"),
+		);
+		expect(comments).toHaveLength(0);
+	});
+
 	it("respects the clickup-skip marker", async () => {
 		const prisma = new FakePrisma(makeProject());
 		const { svc, clickup } = buildSvc(prisma);

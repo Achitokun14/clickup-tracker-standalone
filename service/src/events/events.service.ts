@@ -15,7 +15,7 @@ import type {
 } from "../extractors/git-history.extractor";
 import { isoWeekOf } from "../util/iso-week";
 import { parseGitRemote, type ParsedGitRemote } from "../util/git-remote-parse";
-import { normalizeAuthor } from "../util/classify";
+import { classifyArtifact, normalizeAuthor } from "../util/classify";
 import { normaliseScope, parseConventional } from "./conventional";
 import type { GitEventDto, PromptEventDto } from "./dto/git-event.dto";
 
@@ -396,6 +396,7 @@ export class EventsService {
 			project.template_status === "configured"
 				? planned.status
 				: mapInlineStatus(planned.status);
+		let createdTaskId: string | null = null;
 		try {
 			const created = await this.clickup.createTask(
 				listId,
@@ -413,6 +414,7 @@ export class EventsService {
 				},
 				creds.token,
 			);
+			createdTaskId = created.id;
 			await this.appendToTaskIndex(project.id, { [planned.key]: created.id });
 			project.task_index[planned.key] = created.id;
 			actions.push({
@@ -425,6 +427,21 @@ export class EventsService {
 			this.log.warn(`createTask (commit) failed: ${(err as Error).message}`);
 			actions.push({ kind: "skipped", reason: "create_task_failed" });
 			return;
+		}
+
+		// 4b. Plan §C.5 — artifact classification side-effects. For each file
+		// changed, dispatch on its kind (adr/doc/infra/dependency/...). A
+		// single bundled comment on the new commit task lists everything
+		// non-code that this commit touched, so non-code changes (deps,
+		// infra, docs) get visible attention without a separate task per
+		// file. `generated` is suppressed; `code` produces no comment.
+		if (createdTaskId) {
+			await this.tryAppendArtifactWatch(
+				createdTaskId,
+				dto.files_changed ?? [],
+				creds.token,
+				actions,
+			);
 		}
 
 		// 5. Conventional-verb side-effects.
@@ -624,6 +641,45 @@ export class EventsService {
 	 * lookup of the Changelog page id is memoised in task_index under
 	 * 'doc_page:Changelog' so we only listDocPages once per project.
 	 */
+	/**
+	 * Plan §C.5 — bundle a single "Artifact watch" comment on the commit
+	 * task summarising every non-code, non-generated file the commit
+	 * touched. One CU API call regardless of file count. Skipped entirely
+	 * when the commit only touched code files (the common case).
+	 */
+	private async tryAppendArtifactWatch(
+		taskId: string,
+		files: Array<{ path: string; status?: string }>,
+		token: string,
+		actions: ResultingAction[],
+	): Promise<void> {
+		if (files.length === 0) return;
+		const grouped = new Map<string, string[]>();
+		for (const f of files) {
+			const kind = classifyArtifact(f.path);
+			if (kind === "code" || kind === "generated") continue;
+			const arr = grouped.get(kind) ?? [];
+			arr.push(f.path);
+			grouped.set(kind, arr);
+		}
+		if (grouped.size === 0) return;
+		const lines: string[] = ["**Artifact watch:**"];
+		for (const [kind, paths] of grouped) {
+			const sample = paths
+				.slice(0, 5)
+				.map((p) => `\`${p}\``)
+				.join(", ");
+			const more = paths.length > 5 ? ` …+${paths.length - 5}` : "";
+			lines.push(`- ${kind} × ${paths.length}: ${sample}${more}`);
+		}
+		try {
+			await this.clickup.addComment(taskId, lines.join("\n"), token);
+			actions.push({ kind: "comment", task_id: taskId });
+		} catch (err) {
+			this.log.warn(`artifact-watch comment failed: ${(err as Error).message}`);
+		}
+	}
+
 	private async tryAppendChangelogPage(
 		project: ProjectMin,
 		token: string,
