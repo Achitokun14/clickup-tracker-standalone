@@ -95,6 +95,9 @@ class FakeClickUp {
 	async setTaskStatus(taskId: string, status: string) {
 		this.calls.push({ method: "setTaskStatus", args: [taskId, status] });
 	}
+	async addTagToTask(taskId: string, tag: string) {
+		this.calls.push({ method: "addTagToTask", args: [taskId, tag] });
+	}
 }
 
 class FakeSync {
@@ -425,5 +428,159 @@ describe("EventsService — per-repo Space lifecycle", () => {
 		);
 		expect(receipt.actions.some((a) => a.kind === "skipped")).toBe(true);
 		expect(clickup.calls.length).toBe(0);
+	});
+
+	// ── Plan §C.3 — scope-rename detection ────────────────────────────
+	describe("scope-rename (Plan §C.3)", () => {
+		it("cross-links old + new tasks and tags both `scope-renamed` (unicode arrow)", async () => {
+			const proj = makeProject({
+				task_index: { "todo:legacy": "T_OLD", "todo:v2": "T_NEW" },
+			});
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			await svc.ingestGit(
+				proj.id,
+				makeDto({
+					commit_sha: "1".repeat(40),
+					message: "refactor(legacy→v2): drop transitional shim",
+				}),
+				"key-rename-1",
+			);
+			const tags = clickup.calls.filter(
+				(c) =>
+					c.method === "addTagToTask" &&
+					(c.args as any[])[1] === "scope-renamed",
+			);
+			expect(tags).toHaveLength(2);
+			const taggedIds = tags.map((t) => (t.args as any[])[0]).sort();
+			expect(taggedIds).toEqual(["T_NEW", "T_OLD"]);
+			const renameComments = clickup.calls.filter(
+				(c) =>
+					c.method === "addComment" &&
+					String((c.args as any[])[1]).includes("Scope renamed:"),
+			);
+			expect(renameComments).toHaveLength(2);
+			// Old task gets the forward-arrow direction:
+			const oldComment = renameComments.find(
+				(c) => (c.args as any[])[0] === "T_OLD",
+			);
+			expect(String((oldComment!.args as any[])[1])).toContain("legacy → v2");
+			// New task gets the back-link:
+			const newComment = renameComments.find(
+				(c) => (c.args as any[])[0] === "T_NEW",
+			);
+			expect(String((newComment!.args as any[])[1])).toContain("v2 ← legacy");
+			// Original fix/feat verb path must NOT close either task on a rename.
+			expect(clickup.calls.some((c) => c.method === "setTaskStatus")).toBe(
+				false,
+			);
+		});
+
+		it("ASCII arrow (`old->new`) is recognised the same as unicode", async () => {
+			const proj = makeProject({
+				task_index: { "todo:api": "T_API", "todo:apiv2": "T_APIV2" },
+			});
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			await svc.ingestGit(
+				proj.id,
+				makeDto({
+					commit_sha: "2".repeat(40),
+					message: "refactor(api->apiv2): split versions",
+				}),
+				"key-rename-2",
+			);
+			const tags = clickup.calls.filter(
+				(c) =>
+					c.method === "addTagToTask" &&
+					(c.args as any[])[1] === "scope-renamed",
+			);
+			expect(tags).toHaveLength(2);
+		});
+
+		it("when only old scope is tracked: comments on old + on commit task", async () => {
+			const proj = makeProject({
+				task_index: { "todo:legacy": "T_OLD" }, // no v2 task tracked
+			});
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			await svc.ingestGit(
+				proj.id,
+				makeDto({
+					commit_sha: "3".repeat(40),
+					message: "refactor(legacy→v2): start migration",
+				}),
+				"key-rename-3",
+			);
+			const oldTag = clickup.calls.filter(
+				(c) =>
+					c.method === "addTagToTask" &&
+					(c.args as any[])[0] === "T_OLD" &&
+					(c.args as any[])[1] === "scope-renamed",
+			);
+			expect(oldTag).toHaveLength(1);
+			const oldComment = clickup.calls.find(
+				(c) =>
+					c.method === "addComment" &&
+					(c.args as any[])[0] === "T_OLD" &&
+					String((c.args as any[])[1]).includes("Scope renamed:"),
+			);
+			expect(oldComment).toBeDefined();
+			expect(String((oldComment!.args as any[])[1])).toContain(
+				"_(no task tracked under that scope yet)_",
+			);
+		});
+
+		it("plain scope (`fix(api):`) does NOT trigger rename handling", async () => {
+			const proj = makeProject({
+				task_index: { "todo:api": "T_API" },
+			});
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			await svc.ingestGit(
+				proj.id,
+				makeDto({
+					commit_sha: "4".repeat(40),
+					message: "fix(api): handle nil",
+				}),
+				"key-plain",
+			);
+			expect(
+				clickup.calls.some(
+					(c) =>
+						c.method === "addTagToTask" &&
+						(c.args as any[])[1] === "scope-renamed",
+				),
+			).toBe(false);
+			// fix verb path SHOULD still close the api task.
+			expect(
+				clickup.calls.some(
+					(c) =>
+						c.method === "setTaskStatus" && (c.args as any[])[0] === "T_API",
+				),
+			).toBe(true);
+		});
+
+		it("neither scope tracked: leaves a breadcrumb on the commit task", async () => {
+			const proj = makeProject({ task_index: {} });
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			await svc.ingestGit(
+				proj.id,
+				makeDto({
+					commit_sha: "5".repeat(40),
+					message: "refactor(unknown→novel): rename out of thin air",
+				}),
+				"key-rename-5",
+			);
+			const breadcrumb = clickup.calls.find(
+				(c) =>
+					c.method === "addComment" &&
+					String((c.args as any[])[1]).includes(
+						"_(no tracked tasks under either scope yet)_",
+					),
+			);
+			expect(breadcrumb).toBeDefined();
+		});
 	});
 });
