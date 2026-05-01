@@ -4,6 +4,67 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-02
+
+The autonomous-SCRUM release. Builds a multi-developer workspace adoption flow on top of the v0.2 per-repo Space model, then layers a heuristic-only autonomous SCRUM operator over it: sprint planner, daily groomer, weekday standups, end-of-sprint retros, artifact classifier, audit trail, and per-team advisory-lock leadership. Hardens production with branch-routing/Doc-atomicity/controller hotfixes, an orphan-Space detection cron, member-offboarding diff, an auth-needed state machine, and rate-limit priority queues so autonomous traffic never starves user actions.
+
+### Added
+
+#### Phase A — production hotfixes (PRs #35)
+
+- **3-layer branch-routing fix (Bug 1)** — hook script falls back to `init.defaultBranch` on detached HEAD, daemon synthesises `git_default_branch` when DTO branch is empty, planner safety net treats null+empty refs as default. Branch-null commits no longer mis-route to In Review.
+- **Atomic Doc creation (Bug 2)** — `ensureDoc` now persists `clickup_doc_id` *before* attempting page creates; per-page failures append to `backfill_state.errors` instead of crashing the whole try-block. Replan after partial failure only creates missing pages.
+- **Controller exposes all 19 schema columns (Bug 3)** — `mapProjectRow` adds `clickupDocId`, `sprintLists`, `backfillState`, `templateStatus`, `gitDefaultBranch`, `gitRemoteHost`, `gitRemoteOwnerRepo`, `lastSeenStatusChanges` (previously dropped).
+- **`POST /projects/:id/repair-routing?dryRun=true|false`** — cleans up duplicate commit tasks from prior wipe-and-rereg cycles + moves misrouted In-Review tasks to the current sprint List. Default `dryRun=true`; `?dryRun=false` mutates.
+- **Wipe-aware `register` adoption gate (Bug 4)** — when an existing Space matches by displayName, register adopts it instead of creating a duplicate.
+
+#### Phase B — multi-developer workspace adoption (PRs #36, #39, #44, #45, #46)
+
+- **`GET /projects/lookup`** + **`POST /projects/adopt`** — find an existing Space (by `git_remote_url` footer match → strong, displayName/owner-repo slug → medium, kebab substring → weak) and hydrate `list_ids` + `task_index` from auto-imported task footers.
+- **Tolerant Folder/List hydration** — emoji-prefix Folder match (📦 → backlog_bugs, 🚧 → active_work, 📜 → history, 📚 → knowledge); ad-hoc human Lists/Folders in the Space are persisted into `extra_lists` / `extra_folders` and never touched.
+- **Team-level git_events uniqueness** (`schema/03_collab_and_scrum.sql`) — partial UNIQUE on `(clickup_team_id, commit_sha)` so the same SHA from two developers' daemons dedupes silently.
+- **Webhook race coordination** — second daemon's backfill detects an existing `workspace_settings.webhook_id` + caches the secret instead of creating a duplicate webhook.
+- **Worktree dedupe in register** — `(orgId, local_path) OR (orgId, git_remote_url)` lookup means a second clone of the same remote on one machine returns the existing project row.
+- **Orphan-Space detection cron** (B.8) — every 30 min, ping each active project's Space; on 404 flip status `active → orphaned` so the daemon stops writing. `CUP_ORPHAN_DETECTION=off` disables.
+- **Member-offboarding diff** (B.9) — when the 24h workspace-members cache refetches successfully, emails removed from the workspace get appended to every active project's `scrum_config.members_offboarded` (JSONB DISTINCT for idempotency).
+- **Auth-needed state machine** (B.6) — 401 from CU writes flips status `active → auth-needed`; ingestGit early-returns on any non-active status; `POST /projects/:id/refresh-credentials` flips back after operator rotation.
+
+#### Phase C — autonomous SCRUM operator (PRs #37, #38, #40, #41, #43, #47, #48)
+
+- **Sprint planner** (`scrum/sprint-planner.service.ts`) — Mondays 08:00 UTC; velocity = mean of last 4 sprint Lists' Done counts (default 8 while warming up); selection in priority order: carryover → bug ceiling (round(velocity × 30%)) → top open work; idempotent on `iso_week`; goal inferred from mode of `epic:` tags.
+- **Daily groomer** (`scrum/groomer.service.ts`) — 06:00 UTC; 4 rules (dedupe via Jaccard ≥ 0.8 + file overlap, stale-bug bump/shame, hotspot promote with 30d cooldown, zombie archive default-OFF). Posts a `[YYYY-MM-DD] Daily Triage` summary task.
+- **Standup + retro reporting** (`scrum/reporting.service.ts`, C.4) — weekday 08:30 UTC standup pages grouped by author with sprint-progress + true blocker filter (priority=urgent OR tag=blocked), Sun 18:00 UTC retro with velocity actual-vs-committed + bug throughput diff + carryover spike call-out. Both posted under auto-managed Standups/Retros parent Doc pages; idempotent on UTC date / iso_week.
+- **Master 5-minute scheduler** (`scrum/scrum.scheduler.ts`) — single tick decides which projects are due for plan/groom/standup/retro and dispatches under `LeadershipService.withLeadership(team_id, lock_name)` (Postgres `pg_try_advisory_xact_lock`) so only one daemon per workspace acts.
+- **Audit trail** (`scrum/audit.service.ts` + `scrum_audit` table) — every autonomous action emits a row with before/after/reason/dry_run; browseable via `GET /projects/:id/scrum/audit`.
+- **Artifact classifier** (`util/classify.ts:classifyArtifact`, C.5) — 9 kinds (adr/doc/infra/dependency/config-schema/binary-resource/submodule/generated/code); commit lifecycle posts ONE bundled `Artifact watch` comment per commit grouping non-code/non-generated files by kind.
+- **Scope-rename detection** (`refactor(legacy→v2):`, C.3) — accepts unicode `→` or ASCII `->`, cross-links old + new tracked tasks via `scope-renamed` tag + stamped comments, leaves a breadcrumb on the commit task when neither side is tracked yet.
+- **Branch-deletion close** (C.3) — `dto.branch_deleted=true` event closes commit tasks recorded for that branch; hook script auto-emits `prev_path` on renames via `git diff-tree -M`.
+- **File rename + delete handlers** (C.3) — bundled `**Renames:**` comment on commit task; deletions close any `path:<file>`-anchored Open Work task.
+- **PR-comment inbound hooks** (C.3) — `taskCommentPosted` matching GitHub/GitLab/Bitbucket bot phrasing auto-tags `pr-open` or closes on PR-merge. Heuristic regex; merged outranks open.
+- **Three-tier rate limiter** (C.8) — `ClickUpRateLimiter.acquire(tokenKey, "urgent" | "normal" | "scrum")`; strict priority means autonomous SCRUM crons never starve user/lifecycle traffic. Propagated via `AsyncLocalStorage` so SCRUM service entry points are the only changed call sites.
+- **Operator control surface** (C.7) — `POST :id/scrum/{plan-sprint,groom,standup,retro}?dryRun=true|false`, `GET :id/scrum/state`, `PATCH :id/scrum/config`, `GET :id/scrum/audit?since&kind&limit`. All gated by `CUP_AUTOSCRUM=off` env kill switch.
+
+### Changed
+
+- **Hook DTO grows** `prev_path` (file-level, on renames) + `branch_deleted` (event-level, for branch-delete events). Forward-compatible: older hooks keep working; new lifecycle code only fires when fields present.
+- **Artifact comment supersedes per-file subtasks** — non-code commits now post one bundled comment rather than spinning up subtasks for every doc/infra/dep change.
+
+### Fixed
+
+- **Sprint List name format round-trip** — sprint planner emits `Sprint <N> — YYYY-MM-DD → YYYY-MM-DD` (was `Sprint ? — …` which broke the AdoptService regex on re-adoption).
+- **Adoption footer regex** — `/Auto-imported by clickup-tracker\./` (was `/_Auto-imported…\._/` which never matched the actual emit).
+- **Adoption SHA parsing** — anchored to the `**Commit:** \`<sha>\`` line rather than a loose 7-40-hex regex that grabbed unrelated hashes.
+
+### Schema
+
+- **`schema/03_collab_and_scrum.sql`** (new): adds `clickup_team_id` to `git_events` with partial UNIQUE; new `scrum_audit` table; new project columns `velocity_window`, `last_sprint_plan_at`, `last_groom_at`, `last_standup_at`, `last_retro_at`, `scrum_config`, `extra_lists`, `extra_folders`.
+
+### Tests
+
+- **344 tests passing** across 28 suites (was 100ish at v0.2.1). Notable adds: 16 reporting specs, 11 rate-limiter specs (5 priority-queue), 8 orphan-detection specs, 7 auth-rotation specs, 13 PR-comment specs, 10 scope-rename specs, 6 hook-extension specs.
+
+## [0.2.1]
+
 ### Added
 
 #### Per-repo Space rewrite (PRs #12–#20)
