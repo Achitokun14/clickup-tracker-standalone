@@ -210,6 +210,21 @@ export class ClickUpDirectService {
 
 	// ---------- folders ----------
 
+	/**
+	 * Probe a Space by id. Throws HttpException(404) when the Space has been
+	 * deleted from ClickUp; throws other status codes on auth/server errors.
+	 * Used by OrphanDetectionCron (Plan §B.8).
+	 */
+	async getSpace(
+		spaceId: string,
+		token: string,
+	): Promise<{ id: string; name: string }> {
+		return this.fetchV2<{ id: string; name: string }>(
+			`/space/${spaceId}`,
+			token,
+		);
+	}
+
 	async listFolders(spaceId: string, token: string): Promise<ClickUpFolder[]> {
 		const r = await this.fetchV2<{ folders: ClickUpFolder[] }>(
 			`/space/${spaceId}/folder?archived=false`,
