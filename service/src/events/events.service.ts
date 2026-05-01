@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { HttpException, Injectable, Logger } from "@nestjs/common";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import { CredentialsService } from "../credentials/credentials.service";
 import { eventsTotal } from "../metrics/registry";
@@ -68,6 +68,7 @@ interface ProjectMin {
 	git_remote_owner_repo: string | null;
 	template_status: string | null;
 	clickup_doc_id: string | null;
+	status: string;
 }
 
 @Injectable()
@@ -128,6 +129,21 @@ export class EventsService {
 		const project = await this.loadProject(projectId);
 		if (!project) {
 			throw new Error("project not found (post-HMAC; race condition?)");
+		}
+
+		// Plan §B.6/§B.8 — short-circuit when the project is in a halt
+		// state. We still want to ack the event so the hook doesn't retry
+		// forever; we just skip CU writes. The git_events row insert
+		// below is intentionally skipped too (the next attempt after
+		// recovery will see the missing SHA and the user can replay).
+		if (project.status !== "active") {
+			eventsTotal.inc({ kind: "git", outcome: project.status });
+			return {
+				eventId: "",
+				replayed: false,
+				actionsCount: 1,
+				actions: [{ kind: "skipped", reason: `status:${project.status}` }],
+			};
 		}
 
 		// 3. Persist git_events row (always — even if scope filter rejects).
@@ -225,25 +241,54 @@ export class EventsService {
 			return { eventId, replayed: false, actionsCount: 0, actions };
 		}
 
-		// 7. TODO diffs first — orthogonal to commit-task creation.
-		await this.handleTodoDiffs(project, dto, source ?? "human", actions, creds);
-
-		// 8. Commit task — modern per-repo Space behaviour. Falls through quietly
-		// if the project hasn't been backfilled yet (no sprint Lists provisioned).
-		const useSpace = this.hasSpaceLists(project);
-		if (useSpace) {
-			await this.handleCommitForSpace(
+		// 7+8. TODO diffs + commit task. Both call CU writes; on a 401
+		// we flip the project to `auth-needed` (Plan §B.6) so subsequent
+		// crons stop trying. We do NOT swallow the throw — the queue
+		// retries the job, and the next attempt will see status changed
+		// (callers + crons filter on status='active').
+		try {
+			// 7. TODO diffs first — orthogonal to commit-task creation.
+			await this.handleTodoDiffs(
 				project,
 				dto,
-				cc,
 				source ?? "human",
 				actions,
 				creds,
 			);
-		} else {
-			// Legacy 3-list project: keep the comment-on-overview behaviour so
-			// existing installs don't break before they're re-registered.
-			await this.handleCommitForLegacy(project, dto, cc, actions, creds);
+
+			// 8. Commit task — modern per-repo Space behaviour. Falls through quietly
+			// if the project hasn't been backfilled yet (no sprint Lists provisioned).
+			const useSpace = this.hasSpaceLists(project);
+			if (useSpace) {
+				await this.handleCommitForSpace(
+					project,
+					dto,
+					cc,
+					source ?? "human",
+					actions,
+					creds,
+				);
+			} else {
+				// Legacy 3-list project: keep the comment-on-overview behaviour so
+				// existing installs don't break before they're re-registered.
+				await this.handleCommitForLegacy(project, dto, cc, actions, creds);
+			}
+		} catch (err) {
+			if (this.isAuth401(err)) {
+				await this.flipProjectToAuthNeeded(
+					project.id,
+					`401 from CU during commit ${dto.commit_sha.slice(0, 8)} ingest`,
+				);
+				actions.push({ kind: "skipped", reason: "auth_needed" });
+				await this.persistActions(eventId, actions);
+				return {
+					eventId,
+					replayed: false,
+					actionsCount: actions.length,
+					actions,
+				};
+			}
+			throw err;
 		}
 
 		// 9. Persist + bookkeeping.
@@ -428,6 +473,9 @@ export class EventsService {
 				source: `git:${dto.commit_sha}`,
 			});
 		} catch (err) {
+			// Plan §B.6 — let auth failures propagate so the outer catch
+			// can flip the project to `auth-needed`.
+			if (this.isAuth401(err)) throw err;
 			this.log.warn(`createTask (commit) failed: ${(err as Error).message}`);
 			actions.push({ kind: "skipped", reason: "create_task_failed" });
 			return;
@@ -830,6 +878,43 @@ export class EventsService {
 
 	// ── helpers ─────────────────────────────────────────────────
 
+	/**
+	 * Plan §B.6 — detect a 401 from CU. ClickUpDirectService throws
+	 * HttpException(401) on auth failures (and a wrapped Error string
+	 * containing "401" for legacy paths). Match both shapes defensively.
+	 */
+	private isAuth401(err: unknown): boolean {
+		if (err instanceof HttpException && err.getStatus() === 401) return true;
+		const msg = err instanceof Error ? err.message : String(err);
+		return /\b(?:HTTP\s+)?401\b/.test(msg) || /unauthor[i|y]z/i.test(msg);
+	}
+
+	/**
+	 * Plan §B.6 — flip the project to `auth-needed` so daemon writes
+	 * stop until the operator rotates credentials. Inlined SQL (avoids
+	 * a circular import on ProjectsService).
+	 */
+	private async flipProjectToAuthNeeded(
+		projectId: string,
+		reason: string,
+	): Promise<void> {
+		try {
+			const r = await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+         SET status = 'auth-needed', updated_at = NOW()
+         WHERE id = $1::uuid AND status = 'active'`,
+				projectId,
+			);
+			if (r > 0) {
+				this.log.warn(`flipped project ${projectId} → auth-needed (${reason})`);
+			}
+		} catch (err) {
+			this.log.warn(
+				`flipProjectToAuthNeeded(${projectId}) failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
 	private async loadProject(projectId: string): Promise<ProjectMin | null> {
 		const rows = await this.prisma.$queryRawUnsafe<ProjectMin[]>(
 			`SELECT id, organisation_id, display_name, clickup_team_id,
@@ -840,7 +925,8 @@ export class EventsService {
               scope_config::jsonb AS scope_config,
               git_default_branch, git_remote_url,
               git_remote_host, git_remote_owner_repo,
-              template_status, clickup_doc_id
+              template_status, clickup_doc_id,
+              status
        FROM clickup_tracker.projects
        WHERE id = $1::uuid AND status <> 'removed'`,
 			projectId,

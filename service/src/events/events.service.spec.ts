@@ -16,6 +16,7 @@ interface FakeProjectRow {
 	git_remote_url: string | null;
 	git_remote_host: string | null;
 	git_remote_owner_repo: string | null;
+	status?: string;
 }
 
 class FakePrisma {
@@ -128,6 +129,7 @@ function makeProject(overrides: Partial<FakeProjectRow> = {}): FakeProjectRow {
 		git_remote_url: "git@github.com:Achitokun14/sample.git",
 		git_remote_host: "github.com",
 		git_remote_owner_repo: "Achitokun14/sample",
+		status: "active",
 		...overrides,
 	};
 }
@@ -581,6 +583,48 @@ describe("EventsService — per-repo Space lifecycle", () => {
 					),
 			);
 			expect(breadcrumb).toBeDefined();
+		});
+	});
+
+	// ── Plan §B.6 — auth-needed state machine ─────────────────────────
+	describe("auth-needed (Plan §B.6)", () => {
+		it("project status='auth-needed' short-circuits ingestGit (no CU writes)", async () => {
+			const proj = makeProject({ status: "auth-needed" });
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-1");
+			expect(clickup.calls.length).toBe(0);
+			expect(receipt.actions[0].kind).toBe("skipped");
+			expect(receipt.actions[0].reason).toBe("status:auth-needed");
+		});
+
+		it("project status='orphaned' short-circuits the same way", async () => {
+			const proj = makeProject({ status: "orphaned" });
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-2");
+			expect(clickup.calls.length).toBe(0);
+			expect(receipt.actions[0].reason).toBe("status:orphaned");
+		});
+
+		it("a 401 from CU writes flips the project to auth-needed", async () => {
+			const proj = makeProject();
+			const prisma = new FakePrisma(proj);
+			const { svc, clickup } = buildSvc(prisma);
+			// Force the createTask to throw 401
+			(clickup as any).createTask = async () => {
+				throw new (require("@nestjs/common").HttpException)("401", 401);
+			};
+			const receipt = await svc.ingestGit(proj.id, makeDto(), "key-auth-3");
+			expect(receipt.actions.some((a) => a.reason === "auth_needed")).toBe(
+				true,
+			);
+			// Verify the SQL flip ran
+			const flipCall = prisma.calls.find(
+				(c) =>
+					typeof c.sql === "string" && c.sql.includes("status = 'auth-needed'"),
+			);
+			expect(flipCall).toBeDefined();
 		});
 	});
 });
