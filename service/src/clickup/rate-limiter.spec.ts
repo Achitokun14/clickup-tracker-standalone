@@ -86,4 +86,82 @@ describe("ClickUpRateLimiter", () => {
 		expect(lim.remaining("token-A")).toBeLessThan(60);
 		expect(lim.remaining("token-B")).toBe(60);
 	});
+
+	// ── Plan §C.8 — priority queues ───────────────────────────────────
+	describe("priority queues", () => {
+		it("default priority is 'normal' (no regression to existing call sites)", async () => {
+			process.env.CLICKUP_RATE_LIMIT_PER_MIN = "600";
+			const lim = new ClickUpRateLimiter();
+			const waited = await lim.acquire(KEY);
+			expect(waited).toBeLessThan(50);
+		});
+
+		it("urgent waiter preempts queued scrum waiters once a token frees up", async () => {
+			// Capacity=2 keeps the bucket tight enough that we can race waiters.
+			process.env.CLICKUP_RATE_LIMIT_PER_MIN = "120"; // 2/sec
+			const lim = new ClickUpRateLimiter();
+			// Burn the initial 2 tokens so subsequent acquires queue.
+			for (let i = 0; i < 120; i++) await lim.acquire(KEY);
+
+			const order: string[] = [];
+			const scrum1 = lim.acquire(KEY, "scrum").then(() => order.push("scrum1"));
+			const scrum2 = lim.acquire(KEY, "scrum").then(() => order.push("scrum2"));
+			// Wait a tick to ensure scrum waiters are queued first.
+			await new Promise((r) => setImmediate(r));
+			const urgent = lim
+				.acquire(KEY, "urgent")
+				.then(() => order.push("urgent"));
+
+			await Promise.all([scrum1, scrum2, urgent]);
+			// Urgent must come out before both scrum waiters even though it
+			// arrived later.
+			expect(order[0]).toBe("urgent");
+		});
+
+		it("scrum acquire blocks while an urgent waiter is queued (strict priority)", async () => {
+			process.env.CLICKUP_RATE_LIMIT_PER_MIN = "120";
+			const lim = new ClickUpRateLimiter();
+			for (let i = 0; i < 120; i++) await lim.acquire(KEY);
+			// urgent queued first
+			const urgent = lim.acquire(KEY, "urgent");
+			await new Promise((r) => setImmediate(r));
+			// scrum arrives — even if a token freed, urgent must consume first.
+			const scrum = lim.acquire(KEY, "scrum");
+
+			const urgentMs = await urgent;
+			const scrumMs = await scrum;
+			// Both waited (slow path); urgent's wait is shorter than scrum's.
+			expect(urgentMs).toBeGreaterThan(0);
+			expect(scrumMs).toBeGreaterThanOrEqual(urgentMs);
+		});
+
+		it("queueDepth reports per-priority counts", async () => {
+			process.env.CLICKUP_RATE_LIMIT_PER_MIN = "120";
+			const lim = new ClickUpRateLimiter();
+			for (let i = 0; i < 120; i++) await lim.acquire(KEY);
+			// Don't await — leave them queued for a moment.
+			const a = lim.acquire(KEY, "scrum");
+			const b = lim.acquire(KEY, "scrum");
+			const c = lim.acquire(KEY, "normal");
+			await new Promise((r) => setImmediate(r));
+			const depth = lim.queueDepth(KEY);
+			expect(depth.scrum).toBe(2);
+			expect(depth.normal).toBe(1);
+			expect(depth.urgent).toBe(0);
+			// Drain so the test exits cleanly.
+			await Promise.all([a, b, c]);
+		});
+
+		it("FIFO order within the same priority", async () => {
+			process.env.CLICKUP_RATE_LIMIT_PER_MIN = "120";
+			const lim = new ClickUpRateLimiter();
+			for (let i = 0; i < 120; i++) await lim.acquire(KEY);
+			const order: string[] = [];
+			const a = lim.acquire(KEY, "scrum").then(() => order.push("a"));
+			const b = lim.acquire(KEY, "scrum").then(() => order.push("b"));
+			const c = lim.acquire(KEY, "scrum").then(() => order.push("c"));
+			await Promise.all([a, b, c]);
+			expect(order).toEqual(["a", "b", "c"]);
+		});
+	});
 });
