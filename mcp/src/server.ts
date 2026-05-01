@@ -239,6 +239,54 @@ const TOOL_DEFS = [
 			},
 		},
 	},
+	{
+		name: "clickup_lookup_space",
+		description:
+			"Plan §B.1 — list candidate ClickUp Spaces in the workspace that might already be tracking a repo, ranked by match strength (strong/medium/weak). Used by /clickup-add to offer adopt-vs-create.",
+		inputSchema: {
+			type: "object",
+			required: ["displayName"],
+			properties: {
+				displayName: { type: "string" },
+				gitRemoteUrl: { type: "string" },
+				scanFooters: {
+					type: "boolean",
+					description:
+						"If true, scan first-page task descriptions for `Remote: <url>` footer (heavier; default false).",
+				},
+			},
+		},
+	},
+	{
+		name: "clickup_adopt_project",
+		description:
+			"Plan §B.2 — explicitly adopt an existing ClickUp Space as a tracked project. Hydrates list_ids, sprint_lists, and task_index from the Space's existing contents (claiming only auto-imported tasks). Returns hookSecret ONCE.",
+		inputSchema: {
+			type: "object",
+			required: ["localPath", "displayName", "clickupSpaceId"],
+			properties: {
+				localPath: { type: "string" },
+				displayName: { type: "string" },
+				clickupSpaceId: { type: "string" },
+				gitRemoteUrl: { type: "string" },
+				scopeMode: { type: "string" },
+				scopePaths: { type: "array", items: { type: "string" } },
+			},
+		},
+	},
+	{
+		name: "clickup_repair_routing",
+		description:
+			"Plan §A.4 — archive non-canonical commit-task duplicates and move default-branch In-Review survivors to the current sprint List. Defaults to dryRun=true; pass dryRun=false to mutate.",
+		inputSchema: {
+			type: "object",
+			required: ["projectId"],
+			properties: {
+				projectId: { type: "string" },
+				dryRun: { type: "boolean" },
+			},
+		},
+	},
 ];
 
 const server = new Server(
@@ -424,6 +472,47 @@ async function dispatch(
 				).catch(() => null);
 			}
 			return { health, projects, resolved };
+		}
+
+		case "clickup_lookup_space": {
+			const displayName = String(args.displayName ?? "");
+			if (!displayName) throw new Error("displayName is required");
+			const params = new URLSearchParams({ displayName });
+			if (typeof args.gitRemoteUrl === "string" && args.gitRemoteUrl)
+				params.set("gitRemoteUrl", args.gitRemoteUrl);
+			if (args.scanFooters === true) params.set("scanFooters", "true");
+			return http("GET", `/projects/lookup?${params.toString()}`);
+		}
+
+		case "clickup_adopt_project": {
+			const localPath = String(args.localPath ?? "");
+			const displayName = String(args.displayName ?? "");
+			const clickupSpaceId = String(args.clickupSpaceId ?? "");
+			if (!localPath || !displayName || !clickupSpaceId) {
+				throw new Error(
+					"localPath, displayName, and clickupSpaceId are all required",
+				);
+			}
+			const body: Record<string, unknown> = {
+				localPath,
+				displayName,
+				clickupSpaceId,
+			};
+			if (typeof args.gitRemoteUrl === "string" && args.gitRemoteUrl)
+				body.gitRemoteUrl = args.gitRemoteUrl;
+			if (typeof args.scopeMode === "string" && args.scopeMode)
+				body.scopeMode = args.scopeMode;
+			if (Array.isArray(args.scopePaths)) body.scopePaths = args.scopePaths;
+			return http("POST", "/projects/adopt", body);
+		}
+
+		case "clickup_repair_routing": {
+			const projectId = requireId(args);
+			const dryRun = args.dryRun === false ? "false" : "true";
+			return http(
+				"POST",
+				`/projects/${projectId}/repair-routing?dryRun=${dryRun}`,
+			);
 		}
 
 		default:
