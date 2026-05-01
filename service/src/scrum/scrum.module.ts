@@ -6,6 +6,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "./audit.service";
 import { GroomerService } from "./groomer.service";
 import { LeadershipService } from "./leadership.service";
+import { ReportingService } from "./reporting.service";
 import { ScrumController } from "./scrum.controller";
 import { ScrumScheduler } from "./scrum.scheduler";
 import { SprintPlannerService } from "./sprint-planner.service";
@@ -21,6 +22,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		LeadershipService,
 		SprintPlannerService,
 		GroomerService,
+		ReportingService,
 		ScrumScheduler,
 	],
 	exports: [
@@ -28,6 +30,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		LeadershipService,
 		SprintPlannerService,
 		GroomerService,
+		ReportingService,
 	],
 })
 export class ScrumModule {}

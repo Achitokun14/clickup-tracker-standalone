@@ -12,6 +12,7 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "./audit.service";
 import { GroomerService } from "./groomer.service";
+import { ReportingService } from "./reporting.service";
 import { SprintPlannerService } from "./sprint-planner.service";
 
 /**
@@ -27,6 +28,7 @@ export class ScrumController {
 		private readonly prisma: PrismaService,
 		private readonly planner: SprintPlannerService,
 		private readonly groomer: GroomerService,
+		private readonly reporting: ReportingService,
 		private readonly audit: AuditService,
 	) {}
 
@@ -56,6 +58,34 @@ export class ScrumController {
 		}
 		const isDry = dryRun !== "false";
 		return this.groomer.groom(id, isDry);
+	}
+
+	@Post(":id/scrum/standup")
+	async standup(
+		@Req() req: any,
+		@Param("id") id: string,
+		@Query("dryRun") dryRun?: string,
+	) {
+		orgIdOrThrow(req);
+		if (process.env.CUP_AUTOSCRUM === "off") {
+			return { skipped: "autoscrum_disabled" };
+		}
+		const isDry = dryRun !== "false";
+		return this.reporting.generateStandup(id, isDry);
+	}
+
+	@Post(":id/scrum/retro")
+	async retro(
+		@Req() req: any,
+		@Param("id") id: string,
+		@Query("dryRun") dryRun?: string,
+	) {
+		orgIdOrThrow(req);
+		if (process.env.CUP_AUTOSCRUM === "off") {
+			return { skipped: "autoscrum_disabled" };
+		}
+		const isDry = dryRun !== "false";
+		return this.reporting.generateRetro(id, isDry);
 	}
 
 	@Get(":id/scrum/state")

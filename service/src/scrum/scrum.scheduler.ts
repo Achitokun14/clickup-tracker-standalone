@@ -3,6 +3,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { PrismaService } from "../prisma/prisma.service";
 import { GroomerService } from "./groomer.service";
 import { LeadershipService } from "./leadership.service";
+import { ReportingService } from "./reporting.service";
 import { SprintPlannerService } from "./sprint-planner.service";
 
 /**
@@ -31,6 +32,8 @@ interface SchedulableProject {
 	scrum_config: Record<string, unknown> | null;
 	last_sprint_plan_at: Date | null;
 	last_groom_at: Date | null;
+	last_standup_at: Date | null;
+	last_retro_at: Date | null;
 }
 
 @Injectable()
@@ -42,6 +45,7 @@ export class ScrumScheduler {
 		private readonly leadership: LeadershipService,
 		private readonly planner: SprintPlannerService,
 		private readonly groomer: GroomerService,
+		private readonly reporting: ReportingService,
 	) {}
 
 	@Cron(CronExpression.EVERY_5_MINUTES)
@@ -68,7 +72,66 @@ export class ScrumScheduler {
 			if (now.getUTCHours() === 6 && !sameIsoDay(p.last_groom_at, now)) {
 				await this.tryGroom(p);
 			}
+
+			// Standup — weekdays at 08:30 UTC, once per UTC day.
+			const dow = now.getUTCDay();
+			const isWeekday = dow >= 1 && dow <= 5;
+			if (
+				isWeekday &&
+				now.getUTCHours() === 8 &&
+				now.getUTCMinutes() >= 30 &&
+				!sameIsoDay(p.last_standup_at, now)
+			) {
+				await this.tryStandup(p);
+			}
+
+			// Retro — Sundays at 18:00 UTC.
+			if (
+				dow === 0 &&
+				now.getUTCHours() === 18 &&
+				!sameIsoDay(p.last_retro_at, now)
+			) {
+				await this.tryRetro(p);
+			}
 		}
+	}
+
+	private async tryStandup(p: SchedulableProject): Promise<void> {
+		const result = await this.leadership.withLeadership(
+			p.clickup_team_id,
+			`scrum:standup:${p.id}`,
+			() => this.reporting.generateStandup(p.id, false),
+		);
+		if (!result.leader) {
+			this.log.debug(
+				`scrum:standup ${p.id}: not_leader (peer daemon won the lock)`,
+			);
+			return;
+		}
+		this.log.log(
+			`scrum:standup ${p.id}: ${
+				result.value.skipped ?? `posted ${result.value.dateUtc}`
+			}`,
+		);
+	}
+
+	private async tryRetro(p: SchedulableProject): Promise<void> {
+		const result = await this.leadership.withLeadership(
+			p.clickup_team_id,
+			`scrum:retro:${p.id}`,
+			() => this.reporting.generateRetro(p.id, false),
+		);
+		if (!result.leader) {
+			this.log.debug(
+				`scrum:retro ${p.id}: not_leader (peer daemon won the lock)`,
+			);
+			return;
+		}
+		this.log.log(
+			`scrum:retro ${p.id}: ${
+				result.value.skipped ?? `posted ${result.value.isoWeek}`
+			}`,
+		);
 	}
 
 	private async tryPlanSprint(p: SchedulableProject): Promise<void> {
@@ -109,7 +172,8 @@ export class ScrumScheduler {
 		try {
 			return await this.prisma.$queryRawUnsafe<SchedulableProject[]>(
 				`SELECT id, clickup_team_id, scrum_config,
-                last_sprint_plan_at, last_groom_at
+                last_sprint_plan_at, last_groom_at,
+                last_standup_at, last_retro_at
          FROM clickup_tracker.projects
          WHERE status = 'active'
            AND clickup_team_id IS NOT NULL
