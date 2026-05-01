@@ -10,6 +10,7 @@ import { ProjectsController } from "./projects.controller";
 import { ProjectsService } from "./projects.service";
 import { LookupService } from "./lookup.service";
 import { AdoptService } from "./adopt.service";
+import { OrphanDetectionCron } from "./orphan-detection.cron";
 
 @Module({
 	imports: [QueueModule],
@@ -24,6 +25,7 @@ import { AdoptService } from "./adopt.service";
 		RepairService,
 		LookupService,
 		AdoptService,
+		OrphanDetectionCron,
 	],
 	exports: [
 		PrismaService,
