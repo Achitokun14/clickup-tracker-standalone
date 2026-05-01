@@ -732,13 +732,27 @@ export class BackfillService implements OnModuleInit {
 		if (fresh) return rows[0].members_cache ?? {};
 
 		let members: Record<string, number> = {};
+		let listOk = false;
 		try {
 			const list = await this.clickup.listMembers(teamId, token);
 			for (const m of list) {
 				if (m.email) members[m.email.toLowerCase()] = m.id;
 			}
+			listOk = true;
 		} catch (err) {
 			this.log.warn(`listMembers failed: ${(err as Error).message}`);
+		}
+
+		// Plan §B.9 — when the refresh succeeds, diff against the prior
+		// cache. Emails that were tracked but no longer in the workspace
+		// are appended to each project's `scrum_config.members_offboarded`
+		// so the daily groomer can flag their assignments for reassignment.
+		if (listOk) {
+			const previous = rows[0]?.members_cache ?? {};
+			const removed = diffOffboardedEmails(previous, members);
+			if (removed.length > 0) {
+				await this.recordOffboardedMembers(teamId, removed);
+			}
 		}
 
 		await this.prisma.$executeRawUnsafe(
@@ -753,6 +767,51 @@ export class BackfillService implements OnModuleInit {
 			JSON.stringify(members),
 		);
 		return members;
+	}
+
+	/**
+	 * Plan §B.9 — append offboarded emails to every team-member project's
+	 * `scrum_config.members_offboarded` array. Uses a JSONB set-union
+	 * pattern so re-running on the same email is idempotent.
+	 */
+	private async recordOffboardedMembers(
+		teamId: string,
+		emails: string[],
+	): Promise<void> {
+		try {
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+         SET scrum_config = jsonb_set(
+               COALESCE(scrum_config, '{}'::jsonb),
+               '{members_offboarded}',
+               (
+                 SELECT to_jsonb(ARRAY(
+                   SELECT DISTINCT email
+                   FROM unnest(
+                     ARRAY(
+                       SELECT jsonb_array_elements_text(
+                         COALESCE(scrum_config->'members_offboarded', '[]'::jsonb)
+                       )
+                     ) || $2::text[]
+                   ) AS email
+                 ))
+               ),
+               true
+             ),
+             updated_at = NOW()
+         WHERE clickup_team_id = $1
+           AND status = 'active'`,
+				teamId,
+				emails,
+			);
+			this.log.warn(
+				`offboarded ${emails.length} member(s) from workspace ${teamId}: ${emails.join(", ")}`,
+			);
+		} catch (err) {
+			this.log.warn(
+				`recordOffboardedMembers(${teamId}) failed: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	// ── persistence helpers ───────────────────────────────────────
@@ -878,6 +937,24 @@ export class BackfillService implements OnModuleInit {
 function extractCommitSha(taskKey: string): string | null {
 	const m = /^commit:([0-9a-f]{7,40})/.exec(taskKey);
 	return m ? m[1] : null;
+}
+
+/**
+ * Plan §B.9 — return the set of emails present in `previous` that are
+ * absent from `current`. Case-insensitive (matches how
+ * `ensureMembers` lower-cases on insert). Empty arrays are tolerated
+ * on either side.
+ */
+export function diffOffboardedEmails(
+	previous: Record<string, unknown>,
+	current: Record<string, unknown>,
+): string[] {
+	const presentNow = new Set(Object.keys(current).map((e) => e.toLowerCase()));
+	const removed: string[] = [];
+	for (const email of Object.keys(previous)) {
+		if (!presentNow.has(email.toLowerCase())) removed.push(email.toLowerCase());
+	}
+	return removed;
 }
 
 /** Extract the first scope/path-prefix token from a planned commit task name.
