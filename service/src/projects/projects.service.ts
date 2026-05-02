@@ -46,6 +46,16 @@ export interface ProjectRow {
 	git_remote_host: string | null;
 	git_remote_owner_repo: string | null;
 	last_seen_status_changes: unknown[];
+	// Plan §M.1 / §N.2 — webhook + Railway bindings (schema 05).
+	github_webhook_id: string | null;
+	github_webhook_secret: string | null;
+	railway_project_id: string | null;
+	railway_service_ids: string[];
+	railway_environments: Record<string, string>;
+	last_railway_poll_at: Date | null;
+	deployments_list_id: string | null;
+	whiteboard_url: string | null;
+	bug_form_url: string | null;
 }
 
 export interface ProjectSummary {
@@ -453,6 +463,46 @@ export class ProjectsService {
 				dto.githubWebhookSecret,
 			);
 		}
+		return rows[0];
+	}
+
+	/**
+	 * Plan §N.2 — bind a project to a Railway project + service set.
+	 * Each field is optional; pass only what changed. `railwayProjectId`
+	 * may be sent as `null` to clear the binding.
+	 */
+	async patchRailwayBinding(
+		orgId: string,
+		projectId: string,
+		dto: {
+			railwayProjectId?: string | null;
+			railwayServiceIds?: string[];
+			railwayEnvironments?: Record<string, string>;
+		},
+	): Promise<ProjectRow> {
+		await this.get(orgId, projectId); // org-scope check
+		const sets: string[] = [];
+		const params: unknown[] = [orgId, projectId];
+		if (dto.railwayProjectId !== undefined) {
+			params.push(dto.railwayProjectId);
+			sets.push(`railway_project_id = $${params.length}`);
+		}
+		if (dto.railwayServiceIds !== undefined) {
+			params.push(JSON.stringify(dto.railwayServiceIds));
+			sets.push(`railway_service_ids = $${params.length}::jsonb`);
+		}
+		if (dto.railwayEnvironments !== undefined) {
+			params.push(JSON.stringify(dto.railwayEnvironments));
+			sets.push(`railway_environments = $${params.length}::jsonb`);
+		}
+		if (sets.length === 0) return this.get(orgId, projectId);
+		const rows = await this.prisma.$queryRawUnsafe<ProjectRow[]>(
+			`UPDATE clickup_tracker.projects
+			 SET ${sets.join(", ")}, updated_at = NOW()
+			 WHERE organisation_id = $1::uuid AND id = $2::uuid
+			 RETURNING *`,
+			...params,
+		);
 		return rows[0];
 	}
 

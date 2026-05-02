@@ -12,6 +12,7 @@ import { BackfillModule } from "./backfill/backfill.module";
 import { ClickUpWebhooksModule } from "./clickup-webhooks/clickup-webhooks.module";
 import { GithubModule } from "./github/github.module";
 import { NotifyModule } from "./notify/notify.module";
+import { RailwayModule } from "./railway/railway.module";
 import { ScrumModule } from "./scrum/scrum.module";
 
 @Module({
@@ -27,6 +28,7 @@ import { ScrumModule } from "./scrum/scrum.module";
 		ScrumModule,
 		NotifyModule,
 		GithubModule,
+		RailwayModule,
 	],
 	controllers: [HealthController, OpenApiController, MetricsController],
 	providers: [],

@@ -73,3 +73,18 @@ export class PatchProjectDto {
 	@IsString()
 	githubWebhookSecret?: string;
 }
+
+/** Plan §N.2 — bind a project to a Railway project + service set. */
+export class RailwayBindingDto {
+	@IsOptional()
+	@IsString()
+	railwayProjectId?: string | null;
+
+	@IsOptional()
+	@IsArray()
+	railwayServiceIds?: string[];
+
+	@IsOptional()
+	@IsObject()
+	railwayEnvironments?: Record<string, string>;
+}
