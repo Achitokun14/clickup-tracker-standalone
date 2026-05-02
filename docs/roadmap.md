@@ -12,18 +12,19 @@ timeline
   v0.1.x : Single Folder model<br/>Commits + Prompts + Overview
   v0.2.x : Per-repo Spaces<br/>4-folder hierarchy<br/>Doc handbook<br/>Bulk extractors
   v0.3.0 : Autonomous SCRUM operator<br/>Multi-developer adoption<br/>Hotfix triple (branch routing,<br/>doc atomicity, controller fields)<br/>17 PRs · 365 tests
-  v0.4.0 (in progress) : Native CU UI richness<br/>(custom fields, colored tags,<br/>views, goals, watchers, mentions)<br/>GitHub identity bridge
+  v0.4.0 : Native CU UI richness<br/>(custom fields, colored tags,<br/>views, goals, watchers, mentions)<br/>GitHub identity bridge<br/>Doc redesign + visual lifecycle<br/>5 PRs · 422 tests
+  v0.5.0 (planned) : Deep collaboration + integrations<br/>(PR review SLA, ownership map,<br/>time tracking, Forms, Whiteboards,<br/>workspace rollup, notifications,<br/>quality signals, GitHub deep,<br/>Railway deployments)<br/>~12 PRs
 ```
 
-### v0.4.0 progress (Phase E + F)
+### v0.4.0 ship list (released)
 
 | PR | Phase | Status |
 |---|---|---|
 | #51 | E.1 + E.2 — Custom fields + colored space tags | merged |
 | #52 | E.3-E.6 — Views + Goals + Watchers + structured mentions | merged |
 | #53 | F.1-F.4 — GitHub identity + Contributors endpoint | merged |
-| – | G.1-G.3 — Doc page redesign (standup with progress bars + per-author tables, retro with sparkline, new Handbook pages) | pending (PR-4) |
-| – | H.1-H.4 — Visual lifecycle (emoji prefixes, collapsibles, table comments, attribution-aware Changelog) | pending (PR-5) |
+| #55 | G.1-G.3 — Doc page redesign (standup with progress bars + per-author tables, retro with sparkline, new Handbook pages) | merged |
+| #56 | H.1-H.4 — Visual lifecycle (emoji prefixes, collapsibles, table comments, attribution-aware Changelog) | merged |
 
 ---
 

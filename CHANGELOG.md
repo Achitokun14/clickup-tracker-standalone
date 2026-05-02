@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-The v0.4.0 *native ClickUp UI richness* milestone. Three PRs landed so far (Phase E + F); two more (Phase G + H) pending. Replaces the v0.3.0 plain-markdown surfaces with structured CU primitives: colored space tags, custom fields, multi-view seeds, sprint Goals, watchers, structured @-mentions, and a GitHub identity bridge that turns commit emails into avatar + profile links.
+_(none — v0.5.0 series in progress on the deep collaboration / quality / integrations track. See [`docs/roadmap.md`](./docs/roadmap.md).)_
+
+## [0.4.0] - 2026-05-02
+
+The *native ClickUp UI richness* milestone. Five PRs across Phases E (CU primitives), F (GitHub identity), G (Doc redesign), H (visual lifecycle). Replaces the v0.3.0 plain-markdown surfaces with structured CU primitives: colored space tags, custom fields, multi-view seeds, sprint Goals, watchers, structured @-mentions, GitHub identity bridge, redesigned standup/retro Doc pages with Unicode progress bars + sparklines, emoji-prefixed task names, and collapsible commit bodies.
 
 ### Added — Phase E (Native CU UI primitives)
 
@@ -25,6 +29,20 @@ The v0.4.0 *native ClickUp UI richness* milestone. Three PRs landed so far (Phas
 - **`GET /projects/:id/contributors`** (F.4) — new endpoint backed by `ContributorService`. Aggregates per-author commit counts (30d + all-time, first/last seen) joined with cached identities.
 - **Identity-aware standup** (F.2) — `renderStandupMd` accepts an `identities` Map keyed by lowercase email; per-author header upgrades from `## email` to `## ![avatar] [github_login](url)\n*email*` when known. ReportingService batch-loads from cache only (no on-demand GitHub API call from the standup path).
 
+### Added — Phase G (Doc page redesign)
+
+- **`util/progress-bar.ts`** — `bar(done,total,width)`, `sparkline(values[])`, `ratio(done,total)` Unicode helpers (block characters, no deps, safe in CU's Markdown viewer).
+- **Standup template upgrade** (G.1) — Sprint Health blockquote with horizontal progress bar; per-author summary table (Yesterday count + top commit + identity-aware avatar/login when cache hit); detailed activity wrapped in `<details>` for noise control.
+- **Retro template upgrade** (G.2) — Velocity sparkline from the project's `velocity_window` (last N sprints); compact metric tables for velocity + bug throughput; carryover spike warning preserved.
+- **Auto-managed handbook pages** (G.3) — three new pages seeded by `hierarchy.planSpace`: Contributors (rendered by `ContributorService.renderContributorsMd` with avatar + login + commit counts), Architecture, Dashboard. Total Doc pages now 8 instead of 5.
+
+### Added — Phase H (Visual lifecycle)
+
+- **Emoji-prefixed task names** (H.1) — single source of truth in `util/emoji-map.ts`. Commit tasks: ✨ feat / 🐛 fix / 🔧 chore / 📝 docs / ♻️ refactor / 🧪 test / ⚡ perf / 🏗️ build / 🤖 ci / ⏪ revert / 🎨 style. Bugs by severity: 🚨 critical / 🟧 high / 🟨 medium / 🟢 low. Synthetic artifacts: 📂 module / 🔥 hotspot / 📦 deps / 🚀 deployment / 🏷️ release. Applied uniformly by both backfill (`planCommitTask`) and the live commit handler.
+- **Collapsible markdown_content** (H.2) — `buildCommitDescription` rewritten with header line + `<details>` blocks for Files Changed (full list, not just top-10) and Commit Body. Reader sees the gist instantly; expands only what's interesting.
+- **Artifact Watch as table** (H.3) — bundled per-commit comment listing non-code touched files now renders as a `| Kind | Count | Files |` Markdown table instead of a flat bullet list.
+- **Attribution-aware Changelog** (H.4) — each Changelog Doc page line gets a UTC timestamp + commit-author identity (avatar + GitHub login when cache hit; plain email fallback) instead of just a bare task name.
+
 ### Schema
 
 - `schema/04_visual_richness.sql` — adds `projects.scrum_goals` + `projects.view_ids` JSONB columns; creates `clickup_tracker.github_identities` table with lowercase-email PK + a partial index on `github_login`. Idempotent.
@@ -36,7 +54,7 @@ The v0.4.0 *native ClickUp UI richness* milestone. Three PRs landed so far (Phas
 
 ### Tests
 
-- 396 passing across 34 suites (+31 from v0.3.0): tag-palette (7), custom-fields (16), views (8), mentions (7), sprint-planner Goal creation (2), GithubIdentityService (10), ContributorService (4).
+- 422 passing across 36 suites (+57 from v0.3.0): tag-palette (7), custom-fields (16), views (8), mentions (7), sprint-planner Goal creation (2), GithubIdentityService (10), ContributorService (8 — +4 for `renderContributorsMd`), progress-bar (15), emoji-map (15).
 
 ## [0.3.0] - 2026-05-02
 
