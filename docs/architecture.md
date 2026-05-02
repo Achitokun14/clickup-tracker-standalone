@@ -1,136 +1,284 @@
 # Architecture
 
-The daemon has three event sources and one outbound sink (ClickUp). Everything is queue-mediated — HTTP returns 200 fast, work happens asynchronously.
+clickup-tracker is a self-hosted Docker daemon (NestJS + Postgres + Redis) that turns local git activity into structured ClickUp output. As of v0.4.0 it ships:
 
-## Components
+- **Per-repo CU Spaces** with a 4-folder hierarchy + a Doc handbook
+- **Autonomous SCRUM operator** — Sprint planner, daily groomer, standup/retro reporter
+- **Multi-developer adoption** — multiple developers' daemons can share one workspace without duplicating tasks
+- **Native CU surfaces** — colored space tags, custom fields, multi-view seeds, sprint Goals, watchers, structured @-mentions
+- **GitHub identity bridge** — commit author email → cached GitHub login/avatar/profile, surfaced on tasks + standup pages
 
+This doc covers the system layout. For per-feature deep-dives see:
+
+- [`scrum-operator.md`](./scrum-operator.md) — Sprint planner, groomer, reporting
+- [`multi-developer.md`](./multi-developer.md) — adoption + per-dev secret model
+- [`github-identity.md`](./github-identity.md) — Phase F bridge
+- [`custom-fields-and-views.md`](./custom-fields-and-views.md) — Phase E schema + view set
+- [`scrum-tracked-artifacts.md`](./scrum-tracked-artifacts.md) — what makes it into CU
+- [`roadmap.md`](./roadmap.md) — v0.5.0 (Phases I-N) preview
+
+---
+
+## High-level component diagram
+
+```mermaid
+graph TB
+  subgraph host["Developer host (Linux / macOS / Windows)"]
+    repo[("tracked repo<br/>.git/hooks/post-commit<br/>.git/hooks/pre-push")]
+    agent["Coding agent<br/>(Claude Code / Goose / OpenCode)"]
+    mcp["MCP shim<br/>mcp/dist/server.js<br/>(stdio)"]
+  end
+
+  subgraph compose["docker compose"]
+    daemon["clickup-tracker daemon<br/>NestJS · port 4020<br/>BullMQ · @Cron schedulers"]
+    pg[("postgres<br/>cup_pgdata")]
+    redis[("redis<br/>cup_redisdata")]
+  end
+
+  cu["ClickUp REST API<br/>v2 + v3"]
+  gh["GitHub REST API<br/>(F.1)"]
+
+  repo -->|"HMAC POST<br/>/public/git-events"| daemon
+  agent -->|"Stop hook<br/>/public/prompt-events"| daemon
+  agent -->|"slash commands"| mcp
+  mcp -->|"HTTP"| daemon
+  daemon <-->|"queues + idempotency"| redis
+  daemon <-->|"projects, git_events,<br/>scrum_audit, github_identities"| pg
+  daemon -->|"createTask, addComment,<br/>createGoal, …"| cu
+  daemon -->|"author resolve"| gh
+  cu -.->|"webhooks (status_changed,<br/>taskCommentPosted)"| daemon
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ host                                                         │
-│                                                              │
-│  ┌──────────────┐   ┌─────────────────────────────────────┐  │
-│  │ tracked repo │   │ docker compose                       │  │
-│  │  .git/hooks/ │   │  ┌─────────────┐  ┌──────────────┐   │  │
-│  │  post-commit ├──▶│  │ clickup-    │  │ postgres     │   │  │
-│  └──────────────┘   │  │ tracker     │◀▶│ (cup_pgdata) │   │  │
-│                     │  │ (NestJS)    │  └──────────────┘   │  │
-│  ┌──────────────┐   │  │ :4020       │  ┌──────────────┐   │  │
-│  │ Claude Code  │   │  │             │◀▶│ redis        │   │  │
-│  │ Goose        │──▶│  │  + BullMQ   │  │ (cup_redisdata)│  │
-│  │ OpenCode …   │   │  │  + drift    │  └──────────────┘   │  │
-│  └──────────────┘   │  │  cron       │                     │  │
-│                     │  └─────┬───────┘                     │  │
-│  ┌──────────────┐   │        │                              │  │
-│  │ MCP client ◀─┼───┼──stdio─┘ (mcp/dist/server.js)         │  │
-│  └──────────────┘   └─────────────────┬──────────────────────┘  │
-└─────────────────────────────────────────┼─────────────────────┘
-                                          ▼
-                                ┌──────────────────┐
-                                │ ClickUp REST API │
-                                └──────────────────┘
+
+---
+
+## Three event sources
+
+```mermaid
+graph LR
+  git_hook["post-commit hook<br/>(per-repo)"] -->|"HMAC<br/>/public/git-events"| daemon
+  agent_hook["agent Stop hook"] -->|"HMAC<br/>/public/prompt-events"| daemon
+  cu_webhook["CU webhook<br/>(per-team)"] -->|"HMAC verified by<br/>WorkspaceSettings.webhook_secret"| daemon
+  drift["drift cron<br/>5min"] -.->|"reconciles missed events"| daemon
+  daemon["clickup-tracker"]
 ```
 
-## Sequence: git commit → ClickUp task
+Every entry-point returns `200 OK` within ~50ms. Heavy work is enqueued and processed by BullMQ workers — the request never blocks on the ClickUp API.
+
+---
+
+## Sequence: git commit → CU task (full v0.4.0 path)
 
 ```mermaid
 sequenceDiagram
-  participant user as developer
-  participant git as git
-  participant hook as post-commit (.git/hooks/)
-  participant cup as clickup-tracker
-  participant q as BullMQ (Redis)
-  participant cu as ClickUp
+  autonumber
+  participant Dev as Developer
+  participant Git as git
+  participant Hook as post-commit hook
+  participant Daemon as clickup-tracker
+  participant Q as BullMQ
+  participant DB as Postgres
+  participant Limiter as RateLimiter (3-tier)
+  participant CU as ClickUp
+  participant GH as GitHub API
 
-  user->>git: git commit
-  git->>hook: synchronous fire
-  hook->>cup: POST /public/git-events (HMAC-signed)
-  cup->>cup: GitHmacGuard verifies signature
-  cup->>q: enqueue process_commit job
-  cup-->>hook: 200 OK (within ~50ms)
-  hook-->>git: exit 0 (commit returns to user)
-  git-->>user: commit complete
+  Dev->>Git: git commit
+  Git->>Hook: synchronous fire
+  Hook->>Daemon: POST /public/git-events (HMAC)
+  Daemon->>DB: INSERT git_events ON CONFLICT (clickup_team_id, sha)
+  Note right of DB: Multi-dev dedupe<br/>(B.4 partial unique)
+  Daemon-->>Hook: 200 OK
+  Hook-->>Git: exit 0
+  Git-->>Dev: commit complete
 
-  Note over q,cu: Async — off the critical path
-  q->>cup: dequeue job
-  cup->>cup: parse Conventional Commit, derive task fields
-  cup->>cu: POST /list/<commits>/task
-  cu-->>cup: 201 Created
-  cup->>cup: persist task ↔ commit mapping
+  Daemon->>Q: enqueue commit-handler
+  Q->>Daemon: dequeue
+  Daemon->>Limiter: acquire(token, 'normal')
+  Daemon->>CU: createTask in sprint List
+  CU-->>Daemon: 201 + taskId
+
+  par Custom fields (E.1 + F.3)
+    Daemon->>GH: GET /repos/.../commits/{sha}
+    GH-->>Daemon: { author.login, avatar_url }
+    Daemon->>DB: UPSERT github_identities
+    Daemon->>CU: setCustomFieldValue × {commit_sha, author_email,<br/>author_github_url, source}
+  and Watcher (E.5)
+    Daemon->>DB: SELECT members_cache
+    Daemon->>CU: addWatcher(taskId, userId)
+  and Artifact watch (C.5)
+    Daemon->>CU: addComment listing<br/>infra/dep/doc/ADR files
+  end
+
+  alt cc.type == "fix" with scope match
+    Daemon->>CU: setStatus('Done') on linked bug task
+  else cc.type == "feat" with scope match
+    Daemon->>CU: setStatus('Done') on linked open-work task
+  end
+
+  Daemon->>CU: append commit to Doc Changelog page
 ```
 
-If the daemon is unreachable, the hook falls back to writing the payload to `~/.cache/cup-cli/buffer/<sha>.json` and exits 0 — the commit never blocks. A future cron sweep replays buffered payloads.
+---
 
-## Sequence: AI agent turn → ClickUp prompt task
+## Sequence: AI agent Stop hook → prompt task
 
 ```mermaid
 sequenceDiagram
-  participant agent as agent (Claude Code / Goose / …)
-  participant stop as Stop hook
-  participant cup as clickup-tracker
-  participant cu as ClickUp
+  participant Agent as Coding agent
+  participant Stop as Stop hook
+  participant Daemon as clickup-tracker
+  participant CU as ClickUp
 
-  agent->>stop: end-of-turn (stdin: transcript path, cwd, session id)
-  stop->>cup: GET /projects/resolve?path=<cwd>
-  cup-->>stop: { match: { id, displayName, … } } or { match: null }
-
+  Agent->>Stop: end-of-turn (transcript path, cwd, session id)
+  Stop->>Daemon: GET /projects/resolve?path=<cwd>
+  Daemon-->>Stop: { match: { id, displayName, … } }
   alt match is null
-    stop-->>agent: exit 0 (no-op)
-  else match found
-    stop->>stop: extract files-touched + outcome from transcript
-    stop->>stop: HMAC-sign body with cached hook_secret
-    stop->>cup: POST /public/prompt-events
-    cup->>cu: POST /list/<prompts>/task
-    cu-->>cup: 201
+    Stop-->>Agent: exit 0 (no-op)
+  else match
+    Stop->>Stop: extract files-touched + outcome from transcript
+    Stop->>Daemon: POST /public/prompt-events (HMAC)
+    Daemon->>CU: createTask under Knowledge → Agent Sessions
   end
 ```
 
-## Sequence: drift cron
+---
 
-Every `CUP_TRACKER_DRIFT_MINUTES` (default 60), the daemon enqueues a `git_drift` job per active project:
+## Per-repo CU Space layout (since v0.2.x)
 
-1. Read repo HEAD via `git -C <localPath> rev-parse HEAD`.
-2. Compare against the `last_synced_commit` row in Postgres.
-3. For each commit in between, enqueue `process_commit` (deduped by sha).
-4. Update the project's "Overview & Docs" task with a fresh README / CHANGELOG snapshot if those files changed.
+Each registered project owns one ClickUp Space. The Space is auto-scaffolded with 4 emoji-prefixed folders, a Doc handbook, and (since v0.4.0) seeded views + custom fields.
 
-This makes the daemon resilient to:
+```mermaid
+graph TD
+  Space["📁 Space: <repo-name>"]
+  subgraph BACKLOG["📦 Backlog & Bugs"]
+    OW["Open Work"]
+    BUGS["Bugs"]
+  end
+  subgraph ACTIVE["🚧 Active Work"]
+    AS["Active Sprint"]
+    IR["In Review"]
+  end
+  subgraph HISTORY["📜 History"]
+    HO["Overview"]
+    SP1["Sprint 2026-W17"]
+    SP2["Sprint 2026-W18"]
+  end
+  subgraph KNOWLEDGE["📚 Knowledge"]
+    ADR["ADRs"]
+    AGENT["Agent Sessions"]
+  end
+  Doc["📓 Doc: <repo> Handbook<br/>(Overview · Setup · Conventions ·<br/>Changelog · Standups · Retros)"]
 
-- Commits made when the post-commit hook was disabled (uninstalled, network outage).
-- Commits made on another machine that pulled into the same repo.
-- Manual ClickUp edits that drifted from git (the daemon doesn't undo them — it just records the divergence in the Overview task).
+  Space --> BACKLOG
+  Space --> ACTIVE
+  Space --> HISTORY
+  Space --> KNOWLEDGE
+  Space --> Doc
+```
 
-## Queue and degradation behavior
+Sprint history Lists accumulate week-over-week (one List per ISO week). The Doc handbook is the long-form companion: standup notes, retros, ADRs.
 
-BullMQ runs in-process with Redis. If Redis is unreachable at boot:
+---
 
-- The daemon **inline-degrades** — `process_commit` runs synchronously inside the request handler instead of enqueueing.
-- Throughput drops, but no events are lost.
-- Once Redis is back, jobs go back to async mode automatically.
+## Schema overview (current)
 
-Visible in metrics as `cup_inline_processed_total` (counter).
+```mermaid
+erDiagram
+  organisations ||--o{ projects : owns
+  organisations ||--|| organisation_credentials : "1 token per workspace"
+  projects ||--o{ git_events : "post-commit"
+  projects ||--o{ prompt_events : "agent Stop"
+  projects ||--o{ scrum_audit : "every autonomous action"
+  projects ||--o{ backups : "pre-risky-op snapshots"
+  workspace_settings ||--o{ projects : "members_cache + webhook"
+  github_identities ||--o{ git_events : "joined by lower(email)"
+
+  projects {
+    uuid id PK
+    text local_path
+    text display_name
+    text clickup_space_id
+    jsonb list_ids
+    jsonb sprint_lists
+    jsonb task_index
+    jsonb custom_field_ids
+    jsonb scrum_goals
+    jsonb scrum_config
+    text status "active|paused|orphaned|auth-needed"
+    timestamptz last_sprint_plan_at
+    timestamptz last_groom_at
+    timestamptz last_standup_at
+    timestamptz last_retro_at
+  }
+  github_identities {
+    text email PK
+    text github_login
+    text github_url
+    text avatar_url
+    timestamptz resolved_at
+    text source
+  }
+  scrum_audit {
+    uuid id PK
+    uuid project_id FK
+    text kind "plan_sprint|groom|standup|retro|…"
+    text target
+    jsonb before
+    jsonb after
+    text reason
+    bool dry_run
+  }
+```
+
+See `schema/init.sql`, `schema/02_per_repo_space.sql`, `schema/03_collab_and_scrum.sql`, `schema/04_visual_richness.sql`.
+
+---
+
+## Rate limiting (3-tier priority queue)
+
+ClickUp hard-limits at 100 req/min/token. The in-house token-bucket limiter (`service/src/clickup/rate-limiter.ts`) enforces this with three priority levels:
+
+```mermaid
+graph LR
+  urgent["urgent<br/>(operator-triggered)"] --> bucket{token bucket}
+  normal["normal<br/>(lifecycle: commits, agents)"] --> bucket
+  scrum["scrum<br/>(sprint planner, groomer,<br/>reporting crons)"] --> bucket
+  bucket -->|"strict priority<br/>urgent > normal > scrum"| api[ClickUp API]
+```
+
+Priority is propagated via `AsyncLocalStorage` (`service/src/clickup/priority-context.ts`) so HTTP handlers can wrap a callable in `runWithPriority('urgent', fn)` without threading the priority through every wrapper signature.
+
+---
 
 ## Auth model
 
-| Surface | Auth | Why |
+| Surface | Auth | Notes |
 |---|---|---|
-| Internal `/projects/*` | Static bearer (`STANDALONE_API_TOKEN`) if set; otherwise open | The owner controls clients. Fine for localhost. Set the bearer if exposed. |
-| Public `/public/git-events`, `/public/prompt-events` | Per-project HMAC-SHA256 (`hook_secret`) | The webhook payload is the auth payload — no separate key exchange needed. Different per project. |
-| `/public/metrics` | Optional separate bearer (`METRICS_AUTH_TOKEN`) | Read-only credential for Prometheus. Independent rotation from the main bearer. |
-| `/health`, `/public/openapi.yaml` | Open | Liveness and self-documentation. |
+| Internal `/projects/*`, `/scrum/*` | Static bearer (`STANDALONE_API_TOKEN`) | Required when exposed beyond localhost |
+| Public `/public/git-events`, `/public/prompt-events` | Per-project HMAC-SHA256 (`hook_secret`) | One secret per project; cached client-side at `~/.config/clickup-tracker/projects/<id>.secret` |
+| Public `/public/clickup-webhook` | HMAC verified by `workspace_settings.webhook_secret` | One per CU workspace (multi-dev share) |
+| `/public/metrics` | Optional bearer (`METRICS_AUTO_TOKEN`) | Independent rotation; for Prometheus |
+| `/health`, `/public/openapi.yaml` | Open | Liveness + self-doc |
+| GitHub fetch (F.1) | `GITHUB_TOKEN` env (optional) | Lifts unauth 60/h to authed 5000/h |
 
-## Schema
+---
 
-See `schema/init.sql` and `service/prisma/schema.prisma`. Two main tables:
+## Degradation modes
 
-- `projects` — registered repos, ClickUp Folder/List ids, `hook_secret`, `last_synced_commit`.
-- `backups` — snapshots of the ClickUp tree, used by `/projects/:id/restore`.
+```mermaid
+graph TD
+  start([daemon boot]) --> redis_check{Redis<br/>reachable?}
+  redis_check -->|yes| async[BullMQ async mode]
+  redis_check -->|no| inline[Inline-degraded mode<br/>cup_inline_processed_total++]
+  async --> ratelimit_check{ClickUp 5xx /<br/>rate-limit storm?}
+  ratelimit_check -->|burst| backoff[Exponential backoff<br/>1s → 16s, 5 attempts]
+  ratelimit_check -->|persistent| persist[Job stays queued;<br/>retried on restart]
+  inline --> still_works[Throughput drops<br/>but no events lost]
+  daemon_401[ClickUp 401 from a project] --> auth_needed[Status flip → auth-needed<br/>Warning task posted]
+  github_429[GitHub rate-limit nearly out] --> halt[Halt new fetches 60s<br/>Cache hits still served]
+```
 
-## MCP server
+---
 
-`mcp/src/server.ts` is a thin shim — every MCP tool maps 1:1 to an HTTP endpoint on the daemon. The MCP layer adds:
+## What's next
 
-- A stdio transport for agents that want it.
-- Schema validation for tool arguments.
-- A browsable resource (`clickup://projects`) for agents that walk MCP resources.
-
-It is **not** the auth boundary — when an MCP client calls `clickup_register_project`, the MCP server forwards an HTTP `POST /projects` with the `STANDALONE_API_TOKEN` bearer. The daemon enforces auth, not the MCP shim.
+v0.5.0 (Phases I-N) brings deeper collaboration tracking, quality signals, full GitHub webhook ingestion, and Railway deployment mirroring. See [`roadmap.md`](./roadmap.md).

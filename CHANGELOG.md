@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+The v0.4.0 *native ClickUp UI richness* milestone. Three PRs landed so far (Phase E + F); two more (Phase G + H) pending. Replaces the v0.3.0 plain-markdown surfaces with structured CU primitives: colored space tags, custom fields, multi-view seeds, sprint Goals, watchers, structured @-mentions, and a GitHub identity bridge that turns commit emails into avatar + profile links.
+
+### Added — Phase E (Native CU UI primitives)
+
+- **Colored space tags** (E.2) — new `tagPalette()` util maps each canonical tag (`epic:*` blue, `severity:critical` red, `severity:high` orange, `type:feat` violet, `type:fix` rose, `source:*` gray, …) to a fg/bg hex pair; `ensureTags` passes them through `createSpaceTag`. Idempotent: never PATCHes existing tags so user-edited colors stick.
+- **Custom field schema** (E.1) — new `CustomFieldsService` seeds 8 canonical fields per List on Space scaffold (`commit_sha` / `pr_url` / `author_email` / `author_github_url` / `epic` / `severity` / `source` / `milestone`). Each List gets only the subset relevant to it; idempotent via case-insensitive name match. Field IDs persisted to `projects.custom_field_ids[listKey][fieldKey]`. Sprint history Lists share the active_sprint schema.
+- **`createCustomField` wrapper** on `ClickUpDirectService` (POST `/list/{id}/field`) supports all v2 field types + `type_config.options` for dropdowns.
+- **Multi-view seeding** (E.3) — new `ViewsService` seeds Board/Calendar/Gantt/Workload per List per the v0.4.0 schema. Board grouped by assignee/status/severity tag/epic tag depending on List. Workload is tier-gated (Business+); failures debug-logged. Idempotent via case-insensitive view name match.
+- **Sprint Goals + Key Results** (E.4) — sprint planner creates one CU Goal per ISO week (name `Sprint <isoWeek>`) with velocity stats in description and one automatic Key Result linked to the sprint List, so CU rolls up "X of N done" as tasks close. Goal IDs persisted to `projects.scrum_goals[isoWeek]`; deduped on re-run; due-date = Sunday 23:59:59Z.
+- **Watchers** (E.5) — `addWatcher` wrapper. After commit task creation, daemon resolves `committer_email` against `workspace_settings.members_cache` (case-insensitive) and adds the user as watcher.
+- **Structured @-mentions** (E.6) — new `addStructuredComment` wrapper using v2's `comment` array form + new `buildMentionedComment(template, resolveMember)` helper. `{@email}` tokens become real `attributes.mention.user_id` segments when resolvable; fall through to plain `@email` text otherwise.
+
+### Added — Phase F (GitHub collaborator identity)
+
+- **`GithubIdentityService`** (F.1) — resolves commit author email → GitHub login/avatar/profile URL via `/repos/{owner}/{repo}/commits/{sha}`. Cached in new `github_identities` table (lowercase email PK).
+- **Discriminated cache policy** — true 404/422 misses → 24h negative cache; transient errors (network/auth/5xx) → no cache write so operator-fixable issues recover next commit.
+- **GitHub rate-limit guard** — `GITHUB_TOKEN` env unlocks authed 5000/h; when `X-RateLimit-Remaining < 5`, halts new fetches for 60s.
+- **Author custom fields on commit task** (F.3) — events.service writes `commit_sha`, `author_email`, `author_github_url`, `source=commit` after `createTask` via `setFieldsOnTask`. Skips silently when project pre-dates field seeding.
+- **`GET /projects/:id/contributors`** (F.4) — new endpoint backed by `ContributorService`. Aggregates per-author commit counts (30d + all-time, first/last seen) joined with cached identities.
+- **Identity-aware standup** (F.2) — `renderStandupMd` accepts an `identities` Map keyed by lowercase email; per-author header upgrades from `## email` to `## ![avatar] [github_login](url)\n*email*` when known. ReportingService batch-loads from cache only (no on-demand GitHub API call from the standup path).
+
+### Schema
+
+- `schema/04_visual_richness.sql` — adds `projects.scrum_goals` + `projects.view_ids` JSONB columns; creates `clickup_tracker.github_identities` table with lowercase-email PK + a partial index on `github_login`. Idempotent.
+
+### Docs
+
+- New deep-dive guides with mermaid diagrams: [`scrum-operator.md`](./docs/scrum-operator.md), [`scrum-tracked-artifacts.md`](./docs/scrum-tracked-artifacts.md), [`multi-developer.md`](./docs/multi-developer.md), [`github-identity.md`](./docs/github-identity.md), [`custom-fields-and-views.md`](./docs/custom-fields-and-views.md), [`roadmap.md`](./docs/roadmap.md).
+- Rewritten [`architecture.md`](./docs/architecture.md) with mermaid component / sequence / ER / state diagrams reflecting v0.3.0 + v0.4.0 surfaces.
+
+### Tests
+
+- 396 passing across 34 suites (+31 from v0.3.0): tag-palette (7), custom-fields (16), views (8), mentions (7), sprint-planner Goal creation (2), GithubIdentityService (10), ContributorService (4).
+
 ## [0.3.0] - 2026-05-02
 
 The autonomous-SCRUM release. Builds a multi-developer workspace adoption flow on top of the v0.2 per-repo Space model, then layers a heuristic-only autonomous SCRUM operator over it: sprint planner, daily groomer, weekday standups, end-of-sprint retros, artifact classifier, audit trail, and per-team advisory-lock leadership. Hardens production with branch-routing/Doc-atomicity/controller hotfixes, an orphan-Space detection cron, member-offboarding diff, an auth-needed state machine, and rate-limit priority queues so autonomous traffic never starves user actions.
