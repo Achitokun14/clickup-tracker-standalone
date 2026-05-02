@@ -8,6 +8,7 @@ import { ContributorService } from "./contributor.service";
 import { GroomerService } from "./groomer.service";
 import { LeadershipService } from "./leadership.service";
 import { OwnershipService } from "./ownership.service";
+import { QualityService } from "./quality.service";
 import { ReportingService } from "./reporting.service";
 import { ReviewEventsService } from "./review-events.service";
 import { ReviewerSuggesterService } from "./reviewer-suggester";
@@ -33,6 +34,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		OwnershipService,
 		WorkspaceRollupService,
 		ReviewerSuggesterService,
+		QualityService,
 		ScrumScheduler,
 	],
 	exports: [
@@ -46,6 +48,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		OwnershipService,
 		WorkspaceRollupService,
 		ReviewerSuggesterService,
+		QualityService,
 	],
 })
 export class ScrumModule {}
