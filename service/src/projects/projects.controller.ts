@@ -6,7 +6,7 @@ import { AdoptService, AdoptDto } from './adopt.service';
 import { ContributorService } from '../scrum/contributor.service';
 import { OwnershipService } from '../scrum/ownership.service';
 import { QualityService } from '../scrum/quality.service';
-import { RegisterProjectDto, PatchProjectDto } from './dto/register-project.dto';
+import { RegisterProjectDto, PatchProjectDto, RailwayBindingDto } from './dto/register-project.dto';
 
 /**
  * Map a `ProjectRow` to the API-facing shape (camelCase, omits hook_secret).
@@ -38,6 +38,13 @@ export function mapProjectRow(row: ProjectRow) {
     lastSyncedAt: row.last_synced_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    githubWebhookId: row.github_webhook_id ?? null,
+    railwayProjectId: row.railway_project_id ?? null,
+    railwayServiceIds: row.railway_service_ids ?? [],
+    railwayEnvironments: row.railway_environments ?? {},
+    deploymentsListId: row.deployments_list_id ?? null,
+    whiteboardUrl: row.whiteboard_url ?? null,
+    bugFormUrl: row.bug_form_url ?? null,
   };
 }
 
@@ -180,6 +187,20 @@ export class ProjectsController {
   @Patch(':id')
   patch(@Req() req: any, @Param('id') id: string, @Body() dto: PatchProjectDto) {
     return this.projects.patch(orgIdOrThrow(req), id, dto);
+  }
+
+  /**
+   * Plan §N.2 — bind a project to a Railway project + service set so the
+   * 2-min poll cron can fetch its deployments.
+   */
+  @Patch(':id/railway')
+  async patchRailway(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: RailwayBindingDto,
+  ) {
+    const row = await this.projects.patchRailwayBinding(orgIdOrThrow(req), id, dto);
+    return mapProjectRow(row);
   }
 
   @Delete(':id')

@@ -28,39 +28,62 @@ function makeRow(overrides: Partial<ProjectRow> = {}): ProjectRow {
 		git_remote_host: "github.com",
 		git_remote_owner_repo: "Achitokun14/sample",
 		last_seen_status_changes: [{ at: "2026-04-30", task_id: "T1" }],
+		github_webhook_id: null,
+		github_webhook_secret: null,
+		railway_project_id: null,
+		railway_service_ids: [],
+		railway_environments: {},
+		last_railway_poll_at: null,
+		deployments_list_id: null,
+		whiteboard_url: null,
+		bug_form_url: null,
 		...overrides,
 	};
 }
 
-describe("mapProjectRow (Bug 3 — controller exposes all 19 fields)", () => {
-	it("exposes all 19 camelCase fields", () => {
+describe("mapProjectRow (Bug 3 — controller exposes all schema fields)", () => {
+	it("exposes the canonical camelCase fields including v0.5.0 additions", () => {
 		const out = mapProjectRow(makeRow());
-		expect(Object.keys(out).sort()).toEqual(
-			[
-				"backfillState",
-				"clickupDocId",
-				"clickupFolderId",
-				"clickupSpaceId",
-				"clickupTeamId",
-				"createdAt",
-				"displayName",
-				"gitDefaultBranch",
-				"gitRemoteHost",
-				"gitRemoteOwnerRepo",
-				"gitRemoteUrl",
-				"id",
-				"lastSeenStatusChanges",
-				"lastSyncedAt",
-				"listIds",
-				"localPath",
-				"scopeConfig",
-				"sprintLists",
-				"status",
-				"taskIndex",
-				"templateStatus",
-				"updatedAt",
-			].sort(),
-		);
+		const keys = Object.keys(out).sort();
+		// Original 22 columns
+		for (const k of [
+			"backfillState",
+			"clickupDocId",
+			"clickupFolderId",
+			"clickupSpaceId",
+			"clickupTeamId",
+			"createdAt",
+			"displayName",
+			"gitDefaultBranch",
+			"gitRemoteHost",
+			"gitRemoteOwnerRepo",
+			"gitRemoteUrl",
+			"id",
+			"lastSeenStatusChanges",
+			"lastSyncedAt",
+			"listIds",
+			"localPath",
+			"scopeConfig",
+			"sprintLists",
+			"status",
+			"taskIndex",
+			"templateStatus",
+			"updatedAt",
+		]) {
+			expect(keys).toContain(k);
+		}
+		// v0.5.0 additions (Phase M / N)
+		for (const k of [
+			"githubWebhookId",
+			"railwayProjectId",
+			"railwayServiceIds",
+			"railwayEnvironments",
+			"deploymentsListId",
+			"whiteboardUrl",
+			"bugFormUrl",
+		]) {
+			expect(keys).toContain(k);
+		}
 	});
 
 	it("never leaks hook_secret", () => {

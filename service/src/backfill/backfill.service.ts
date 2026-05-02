@@ -9,6 +9,7 @@ import {
 	FIELDS_PER_LIST,
 	type ListKey as CustomFieldListKey,
 } from "../clickup/custom-fields";
+import { seedDeploymentFields } from "../clickup/deployment-fields";
 import { ViewsService } from "../clickup/views";
 import { tagPalette } from "../util/tag-palette";
 import { CredentialsService } from "../credentials/credentials.service";
@@ -220,6 +221,11 @@ export class BackfillService implements OnModuleInit {
 		// open_work so humans see *one* recurring item instead of N daily
 		// duplicates. Idempotent via task_index["recurring:daily_triage"].
 		await this.ensureCeremonyRecurringTasks(project, listIdByKey, creds.token);
+
+		// Step 8f — Plan §N.3 — 🚀 Deployments List + custom fields under
+		// the Active Work folder. Skipped silently when RAILWAY_API_TOKEN is
+		// unset; only consumed by RailwayPollCron when bound via PATCH.
+		await this.ensureDeploymentsList(project, folderIdsByName, creds.token);
 
 		// Step 9 — tasks.
 		const totalTasks = plan.tasks.length;
@@ -652,6 +658,73 @@ export class BackfillService implements OnModuleInit {
 			this.log.debug(
 				`ensureCeremonyRecurringTasks failed: ${(err as Error).message}`,
 			);
+		}
+	}
+
+	/**
+	 * Plan §N.3 + §N.6 — provision the 🚀 Deployments List under the
+	 * Active Work folder + seed deployment custom fields. Idempotent:
+	 * lookup-by-name first, persist `deployments_list_id` and merge
+	 * field IDs into `custom_field_ids.deployments`.
+	 *
+	 * Pure scaffold: no Railway API calls happen here. Polling cron
+	 * picks up the bound projects via `PATCH /projects/:id/railway`.
+	 */
+	private async ensureDeploymentsList(
+		project: BackfillProjectRow,
+		folderIdsByName: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		const folderId = folderIdsByName["🚧 Active Work"];
+		if (!folderId) return;
+		try {
+			const existing = await this.prisma.$queryRawUnsafe<
+				Array<{ deployments_list_id: string | null }>
+			>(
+				`SELECT deployments_list_id FROM clickup_tracker.projects
+				 WHERE id = $1::uuid`,
+				project.id,
+			);
+			let listId = existing[0]?.deployments_list_id ?? null;
+			if (!listId) {
+				const lists = await this.clickup.listListsInFolder(folderId, token);
+				const found = lists.find((l) => l.name.trim() === "🚀 Deployments");
+				if (found) {
+					listId = found.id;
+				} else {
+					const created = await this.clickup.createListInFolder(
+						folderId,
+						"🚀 Deployments",
+						token,
+					);
+					listId = created.id;
+				}
+				await this.prisma.$executeRawUnsafe(
+					`UPDATE clickup_tracker.projects
+					 SET deployments_list_id = $1, updated_at = NOW()
+					 WHERE id = $2::uuid`,
+					listId,
+					project.id,
+				);
+			}
+			const seed = await seedDeploymentFields(this.clickup, listId, token);
+			if (Object.keys(seed.ids).length > 0) {
+				await this.prisma.$executeRawUnsafe(
+					`UPDATE clickup_tracker.projects
+					 SET custom_field_ids = jsonb_set(
+					       COALESCE(custom_field_ids, '{}'::jsonb),
+					       '{deployments}',
+					       $1::jsonb,
+					       true
+					     ),
+					     updated_at = NOW()
+					 WHERE id = $2::uuid`,
+					JSON.stringify(seed.ids),
+					project.id,
+				);
+			}
+		} catch (err) {
+			this.log.debug(`ensureDeploymentsList failed: ${(err as Error).message}`);
 		}
 	}
 
