@@ -158,13 +158,27 @@ function buildSvc(prisma: FakePrisma): {
 	const creds = new FakeCredentials();
 	const clickup = new FakeClickUp();
 	const sync = new FakeSync();
+	const customFields = new FakeCustomFieldsForEvents();
+	const githubIdentity = new FakeGithubIdentityForEvents();
 	const svc = new EventsService(
 		prisma as any,
 		creds as any,
 		clickup as any,
 		sync as any,
+		customFields as any,
+		githubIdentity as any,
 	);
 	return { svc, clickup, sync };
+}
+
+class FakeCustomFieldsForEvents {
+	async setFieldsOnTask(): Promise<void> {}
+}
+
+class FakeGithubIdentityForEvents {
+	async resolve(): Promise<null> {
+		return null;
+	}
 }
 
 describe("EventsService — per-repo Space lifecycle", () => {

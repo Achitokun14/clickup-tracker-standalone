@@ -183,6 +183,14 @@ export class ReportingService {
 			sprintTasks = await this.fetchTasks(currentSprintListId, creds.token);
 		}
 
+		// Plan §F.2 — pull cached GitHub identities for the active authors,
+		// keyed lowercase email so the standup template can render avatar
+		// + login link instead of raw email. Identities not yet resolved
+		// fall back to plain `## email` headers.
+		const identities = await this.loadIdentitiesForAuthors(
+			Array.from(byAuthor.keys()),
+		);
+
 		const markdown = renderStandupMd({
 			projectName: project.display_name,
 			today,
@@ -190,6 +198,7 @@ export class ReportingService {
 			byAuthor,
 			openBlockers,
 			sprintTasks,
+			identities,
 		});
 
 		const report: StandupReport = {
@@ -409,6 +418,62 @@ export class ReportingService {
 
 	// ── helpers ────────────────────────────────────────────────────────
 
+	/**
+	 * Plan §F.2 — return cached identities keyed by lowercase email for the
+	 * given author emails. Reads from `github_identities` only (no on-demand
+	 * GitHub API call here — the events-service path keeps the cache warm).
+	 */
+	private async loadIdentitiesForAuthors(emails: string[]): Promise<
+		Map<
+			string,
+			{
+				github_login: string | null;
+				github_url: string | null;
+				avatar_url: string | null;
+			}
+		>
+	> {
+		const out = new Map<
+			string,
+			{
+				github_login: string | null;
+				github_url: string | null;
+				avatar_url: string | null;
+			}
+		>();
+		const lower = emails
+			.map((e) => (e ?? "").toLowerCase())
+			.filter((e) => e.length > 0);
+		if (lower.length === 0) return out;
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{
+					email: string;
+					github_login: string | null;
+					github_url: string | null;
+					avatar_url: string | null;
+				}>
+			>(
+				`SELECT email, github_login, github_url, avatar_url
+				 FROM clickup_tracker.github_identities
+				 WHERE email = ANY($1::text[])`,
+				lower,
+			);
+			for (const r of rows) {
+				out.set(r.email, {
+					github_login: r.github_login,
+					github_url: r.github_url,
+					avatar_url: r.avatar_url,
+				});
+			}
+		} catch (err) {
+			this.log.debug(
+				`loadIdentitiesForAuthors failed: ${(err as Error).message}`,
+			);
+		}
+		return out;
+	}
+
 	private async loadProject(projectId: string): Promise<ProjectMin | null> {
 		const rows = await this.prisma.$queryRawUnsafe<ProjectMin[]>(
 			`SELECT id, organisation_id, clickup_team_id, clickup_doc_id,
@@ -542,6 +607,14 @@ export function renderStandupMd(args: {
 	byAuthor: Map<string, Array<{ sha: string; subject: string }>>;
 	openBlockers: ClickUpTaskFull[];
 	sprintTasks: ClickUpTaskFull[];
+	identities?: Map<
+		string,
+		{
+			github_login: string | null;
+			github_url: string | null;
+			avatar_url: string | null;
+		}
+	>;
 }): string {
 	const lines: string[] = [];
 	lines.push(`# Standup — ${args.today}`);
@@ -552,7 +625,8 @@ export function renderStandupMd(args: {
 		lines.push("_No commits in the last 24 hours._");
 	} else {
 		for (const [author, commits] of args.byAuthor) {
-			lines.push(`## ${author}`);
+			const id = args.identities?.get(author.toLowerCase());
+			lines.push(formatAuthorHeader(author, id));
 			lines.push(`**Yesterday:** ${commits.length} commit(s)`);
 			for (const c of commits.slice(0, 8)) {
 				lines.push(`- \`${c.sha.slice(0, 8)}\` ${c.subject}`);
@@ -703,4 +777,28 @@ function summariseStandup(r: StandupReport): string {
 
 function summariseRetro(r: RetroReport): string {
 	return `committed=${r.committedTasks} delivered=${r.deliveredTasks} carryover=${r.carryoverCount} bug_net=${r.closedBugs - r.newBugs}`;
+}
+
+/**
+ * Plan §F.2 — author section header. Identity-aware: when we have a cached
+ * GitHub identity, render `## ![avatar] [Display](url)` followed by the
+ * email on a sub-line. Falls back to plain `## email` when identity is
+ * unknown so the page still renders.
+ */
+export function formatAuthorHeader(
+	author: string,
+	identity?: {
+		github_login: string | null;
+		github_url: string | null;
+		avatar_url: string | null;
+	},
+): string {
+	if (identity?.github_login && identity?.github_url) {
+		const avatar = identity.avatar_url ? `![](${identity.avatar_url}) ` : "";
+		return (
+			`## ${avatar}[${identity.github_login}](${identity.github_url})\n` +
+			`*${author}*`
+		);
+	}
+	return `## ${author}`;
 }

@@ -3,6 +3,7 @@ import { ProjectsService, ProjectRow } from './projects.service';
 import { RepairService } from '../repair/repair.service';
 import { LookupService } from './lookup.service';
 import { AdoptService, AdoptDto } from './adopt.service';
+import { ContributorService } from '../scrum/contributor.service';
 import { RegisterProjectDto, PatchProjectDto } from './dto/register-project.dto';
 
 /**
@@ -45,6 +46,7 @@ export class ProjectsController {
     private readonly repair: RepairService,
     private readonly lookupSvc: LookupService,
     private readonly adoptSvc: AdoptService,
+    private readonly contributors: ContributorService,
   ) {}
 
   /**
@@ -108,6 +110,18 @@ export class ProjectsController {
   async get(@Req() req: any, @Param('id') id: string) {
     const row = await this.projects.get(orgIdOrThrow(req), id);
     return mapProjectRow(row);
+  }
+
+  /**
+   * Plan §F.4 — per-author contribution stats joined with cached GitHub
+   * identities (Phase F.1). Powers the Contributors Doc page (Phase G.3)
+   * and the `clickup_get_contributors` MCP tool.
+   */
+  @Get(':id/contributors')
+  async listContributors(@Req() req: any, @Param('id') id: string) {
+    // Verify project belongs to caller's org first.
+    await this.projects.get(orgIdOrThrow(req), id);
+    return this.contributors.listForProject(id);
   }
 
   @Post()

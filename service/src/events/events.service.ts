@@ -1,8 +1,10 @@
 import { HttpException, Injectable, Logger } from "@nestjs/common";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
+import { CustomFieldsService } from "../clickup/custom-fields";
 import { CredentialsService } from "../credentials/credentials.service";
 import { eventsTotal } from "../metrics/registry";
 import { PrismaService } from "../prisma/prisma.service";
+import { GithubIdentityService } from "../projects/github-identity.service";
 import { SyncService } from "../sync/sync.service";
 import {
 	mapInlineStatus,
@@ -61,6 +63,7 @@ interface ProjectMin {
 	list_ids: Record<string, string>;
 	sprint_lists: Record<string, string>;
 	task_index: Record<string, string>;
+	custom_field_ids: Record<string, Record<string, string>>;
 	scope_config: { mode?: string; paths?: string[] };
 	git_default_branch: string | null;
 	git_remote_url: string | null;
@@ -80,6 +83,8 @@ export class EventsService {
 		private readonly credentials: CredentialsService,
 		private readonly clickup: ClickUpDirectService,
 		private readonly sync: SyncService,
+		private readonly customFields: CustomFieldsService,
+		private readonly githubIdentity: GithubIdentityService,
 	) {}
 
 	// ── git events ─────────────────────────────────────────────
@@ -517,6 +522,23 @@ export class EventsService {
 				createdTaskId,
 				dto.committer_email,
 				project.clickup_team_id,
+				creds.token,
+			);
+		}
+
+		// 4e. Plan §F.3 — write structured author fields on the commit task:
+		//   - commit_sha
+		//   - author_email
+		//   - author_github_url (resolved via GitHub commits API; cached)
+		//   - source = "commit"
+		// All best-effort; per-field failures debug-logged inside helpers.
+		if (createdTaskId) {
+			await this.tryWriteAuthorFields(
+				project,
+				createdTaskId,
+				resolvedKey,
+				dto.commit_sha,
+				dto.committer_email ?? null,
 				creds.token,
 			);
 		}
@@ -1032,6 +1054,53 @@ export class EventsService {
 	 * when the commit only touched code files (the common case).
 	 */
 	/**
+	 * Plan §F.3 — populate the structured author/commit custom fields on
+	 * the freshly-created commit task. Resolves the GitHub identity
+	 * (cached / on-demand fetch) so a profile URL can be written. Skips
+	 * silently when the project pre-dates field seeding (custom_field_ids
+	 * for the list is empty).
+	 */
+	private async tryWriteAuthorFields(
+		project: ProjectMin,
+		taskId: string,
+		listKey: string,
+		commitSha: string,
+		authorEmail: string | null,
+		token: string,
+	): Promise<void> {
+		const fieldIds = project.custom_field_ids?.[listKey];
+		if (!fieldIds || Object.keys(fieldIds).length === 0) return;
+
+		let githubUrl: string | null = null;
+		if (authorEmail && project.git_remote_owner_repo) {
+			try {
+				const id = await this.githubIdentity.resolve(authorEmail, {
+					commitSha,
+					ownerRepo: project.git_remote_owner_repo,
+					host: project.git_remote_host,
+				});
+				githubUrl = id?.github_url ?? null;
+			} catch (err) {
+				this.log.debug(
+					`githubIdentity.resolve(${authorEmail}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		await this.customFields.setFieldsOnTask(
+			taskId,
+			fieldIds,
+			{
+				commit_sha: commitSha,
+				author_email: authorEmail ?? undefined,
+				author_github_url: githubUrl ?? undefined,
+				source: "commit",
+			},
+			token,
+		);
+	}
+
+	/**
 	 * Plan §E.5 — resolve commit author email against members_cache and
 	 * call addWatcher on the newly-created task. Single fetch per
 	 * commit; on miss (external contributor not yet in the workspace) we
@@ -1197,6 +1266,7 @@ export class EventsService {
               list_ids::jsonb AS list_ids,
               COALESCE(sprint_lists, '{}'::jsonb)::jsonb AS sprint_lists,
               task_index::jsonb AS task_index,
+              COALESCE(custom_field_ids, '{}'::jsonb)::jsonb AS custom_field_ids,
               scope_config::jsonb AS scope_config,
               git_default_branch, git_remote_url,
               git_remote_host, git_remote_owner_repo,
