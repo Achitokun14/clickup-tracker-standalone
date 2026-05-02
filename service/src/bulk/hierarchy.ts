@@ -530,6 +530,27 @@ export function planSpace(
 			markdown:
 				"_Auto-populated by the daemon as agent sessions land. Most recent 50 sessions._",
 		},
+		// Plan §G.3 — auto-managed Handbook pages.
+		{
+			name: "Contributors",
+			markdown:
+				"_Auto-populated by the daemon. Refreshed on each commit + nightly via the contributors cron._\n\n" +
+				"| Contributor | Commits | First seen | Last seen |\n" +
+				"|---|---|---|---|\n" +
+				"| _waiting for first commit_ | – | – | – |",
+		},
+		{
+			name: "Architecture",
+			markdown:
+				"_Auto-populated by the daemon as new top-level directories appear in commits._\n\n" +
+				"_No directories detected yet._",
+		},
+		{
+			name: "Dashboard",
+			markdown:
+				"_Auto-populated by the daemon. Re-renders after Lists + views are seeded._\n\n" +
+				"_Waiting for first backfill._",
+		},
 	];
 
 	// 6. Default views per List.
