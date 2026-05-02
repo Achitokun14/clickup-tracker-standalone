@@ -10,6 +10,7 @@ import { SyncModule } from "./sync/sync.module";
 import { BackupModule } from "./backup/backup.module";
 import { BackfillModule } from "./backfill/backfill.module";
 import { ClickUpWebhooksModule } from "./clickup-webhooks/clickup-webhooks.module";
+import { NotifyModule } from "./notify/notify.module";
 import { ScrumModule } from "./scrum/scrum.module";
 
 @Module({
@@ -23,6 +24,7 @@ import { ScrumModule } from "./scrum/scrum.module";
 		BackfillModule,
 		ClickUpWebhooksModule,
 		ScrumModule,
+		NotifyModule,
 	],
 	controllers: [HealthController, OpenApiController, MetricsController],
 	providers: [],
