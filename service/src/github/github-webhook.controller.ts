@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { ReviewEventsService } from "../scrum/review-events.service";
+import { ActionsMirrorService } from "./actions-mirror.service";
 
 /**
  * Plan §M.1 — GitHub webhook ingestion.
@@ -38,6 +39,7 @@ export class GithubWebhookController {
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly reviewEvents: ReviewEventsService,
+		private readonly actionsMirror: ActionsMirrorService,
 	) {}
 
 	@Post(":projectId")
@@ -116,10 +118,54 @@ export class GithubWebhookController {
 					prAuthorLogin: pr.user?.login ?? "(unknown)",
 					raw: { review, pr_number: pr.number },
 				});
+				return;
 			}
-			// Other event_types are accepted (idempotency row written) but
-			// silently no-op until PR-15 wires them up. This keeps GitHub
-			// from disabling the webhook on unhandled events.
+
+			// Plan §M.2 — GitHub Actions status mirror. workflow_run.completed
+			// → look up the linked commit task and tag/comment it. Per-commit
+			// aggregation is left to the consumer; we just record the run.
+			if (eventType === "workflow_run") {
+				const run = body?.workflow_run;
+				if (!run || run.status !== "completed") return;
+				const conclusion = String(run.conclusion ?? "unknown");
+				const sha = String(run.head_sha ?? "");
+				if (!sha) return;
+				await this.actionsMirror.recordRun({
+					projectId,
+					commitSha: sha,
+					conclusion,
+					htmlUrl: run.html_url ?? null,
+					runId: String(run.id ?? ""),
+					name: run.name ?? "",
+				});
+				return;
+			}
+
+			// pull_request lifecycle — opened / closed / merged updates the
+			// linked commit task status.
+			if (eventType === "pull_request") {
+				const action = String(body?.action ?? "");
+				const pr = body?.pull_request;
+				if (!pr) return;
+				if (action === "opened" || action === "reopened") {
+					await this.actionsMirror.recordPrOpened({
+						projectId,
+						prNumber: Number(pr.number),
+						htmlUrl: pr.html_url ?? null,
+						headSha: pr.head?.sha ?? null,
+					});
+					return;
+				}
+				if (action === "closed") {
+					await this.actionsMirror.recordPrClosed({
+						projectId,
+						prNumber: Number(pr.number),
+						merged: Boolean(pr.merged),
+						mergeCommitSha: pr.merge_commit_sha ?? null,
+					});
+					return;
+				}
+			}
 		} catch (err) {
 			this.log.warn(
 				`webhook dispatch ${eventType} failed: ${(err as Error).message}`,

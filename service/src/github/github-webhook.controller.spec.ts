@@ -44,8 +44,17 @@ function build(opts: { secret?: string | null }) {
 		{ id: "PID", github_webhook_secret: secretValue },
 	]);
 	const reviewEvents = new FakeReviewEvents();
-	const ctrl = new GithubWebhookController(prisma as any, reviewEvents as any);
-	return { ctrl, prisma, reviewEvents };
+	const actionsMirror = {
+		recordRun: jest.fn(),
+		recordPrOpened: jest.fn(),
+		recordPrClosed: jest.fn(),
+	};
+	const ctrl = new GithubWebhookController(
+		prisma as any,
+		reviewEvents as any,
+		actionsMirror as any,
+	);
+	return { ctrl, prisma, reviewEvents, actionsMirror };
 }
 
 describe("GithubWebhookController", () => {
