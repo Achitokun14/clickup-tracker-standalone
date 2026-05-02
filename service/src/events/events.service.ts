@@ -600,6 +600,7 @@ export class EventsService {
 				planned.name,
 				dto.commit_sha,
 				cc.subject,
+				dto.committer_email ?? null,
 				actions,
 			);
 		}
@@ -1164,14 +1165,18 @@ export class EventsService {
 			grouped.set(kind, arr);
 		}
 		if (grouped.size === 0) return;
-		const lines: string[] = ["**Artifact watch:**"];
+		// Plan §H.3 — render as a Markdown table so the comment is scannable
+		// in the CU UI instead of a flat bullet list.
+		const lines: string[] = ["**Artifact watch:**", ""];
+		lines.push("| Kind | Count | Files |");
+		lines.push("|---|---|---|");
 		for (const [kind, paths] of grouped) {
 			const sample = paths
 				.slice(0, 5)
 				.map((p) => `\`${p}\``)
 				.join(", ");
 			const more = paths.length > 5 ? ` …+${paths.length - 5}` : "";
-			lines.push(`- ${kind} × ${paths.length}: ${sample}${more}`);
+			lines.push(`| ${kind} | ${paths.length} | ${sample}${more} |`);
 		}
 		try {
 			await this.clickup.addComment(taskId, lines.join("\n"), token);
@@ -1188,6 +1193,7 @@ export class EventsService {
 		taskName: string,
 		commitSha: string,
 		subject: string,
+		authorEmail: string | null,
 		actions: ResultingAction[],
 	): Promise<void> {
 		const docId = project.clickup_doc_id;
@@ -1204,8 +1210,17 @@ export class EventsService {
 				});
 				project.task_index["doc_page:Changelog"] = pageId;
 			}
+			// Plan §H.4 — attribution-aware Changelog. Prefer the cached GitHub
+			// identity for an avatar + login link; fall back to plain email.
+			const identity = authorEmail
+				? await this.loadIdentityForChangelog(authorEmail)
+				: null;
+			const author = identity?.github_login
+				? `${identity.avatar_url ? `![](${identity.avatar_url}) ` : ""}[${identity.github_login}](${identity.github_url ?? ""})`
+				: (authorEmail ?? "_(unknown)_");
+			const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
 			const para =
-				`\n\n- **${commitSha.slice(0, 8)}** — ${taskName}` +
+				`\n\n- \`${stamp} UTC\` · **${commitSha.slice(0, 8)}** by ${author} — ${taskName}` +
 				(subject && subject !== taskName ? `  \n  ${subject}` : "");
 			await this.clickup.updateDocPage(
 				teamId,
@@ -1217,6 +1232,36 @@ export class EventsService {
 			actions.push({ kind: "doc_append", page_id: pageId });
 		} catch (err) {
 			this.log.debug(`changelog page append failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
+	 * Plan §H.4 — best-effort lookup of cached GitHub identity for a given
+	 * email so the Changelog line can render an avatar + login link instead
+	 * of raw email. Reads cache only — never triggers a GitHub API call.
+	 */
+	private async loadIdentityForChangelog(email: string): Promise<{
+		github_login: string | null;
+		github_url: string | null;
+		avatar_url: string | null;
+	} | null> {
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{
+					github_login: string | null;
+					github_url: string | null;
+					avatar_url: string | null;
+				}>
+			>(
+				`SELECT github_login, github_url, avatar_url
+				 FROM clickup_tracker.github_identities
+				 WHERE email = $1::text
+				 LIMIT 1`,
+				email.toLowerCase(),
+			);
+			return rows[0] ?? null;
+		} catch {
+			return null;
 		}
 	}
 

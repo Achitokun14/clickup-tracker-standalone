@@ -400,12 +400,13 @@ describe("EventsService — per-repo Space lifecycle", () => {
 		expect(comment).toBeDefined();
 		const text = String((comment!.args as any[])[1]);
 		expect(text).toContain("Artifact watch");
-		expect(text).toContain("dependency × 1");
-		expect(text).toContain("infra × 1");
-		expect(text).toContain("doc × 1");
+		// Plan §H.3 — table form: `| kind | count | files |`.
+		expect(text).toContain("| dependency | 1 |");
+		expect(text).toContain("| infra | 1 |");
+		expect(text).toContain("| doc | 1 |");
 		// generated (yarn.lock) + code (src/api.ts) MUST NOT appear.
 		expect(text).not.toContain("generated");
-		expect(text).not.toContain("code ×");
+		expect(text).not.toContain("| code |");
 	});
 
 	it("does NOT post an Artifact watch comment when only code files change", async () => {

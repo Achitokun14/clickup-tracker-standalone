@@ -16,6 +16,12 @@ import {
 	priorityToCu,
 } from "../util/classify";
 import { commitUrl } from "../util/commit-url";
+import {
+	emojiForArtifact,
+	emojiForBugSeverity,
+	emojiForCommitType,
+	prefixName,
+} from "../util/emoji-map";
 import type { ParsedGitRemote } from "../util/git-remote-parse";
 import type {
 	ChangelogEntry,
@@ -420,7 +426,8 @@ export function planSpace(
 		tasks.push({
 			key: `adr:${adr.slug}`,
 			listKey: "adrs",
-			name: `ADR — ${adr.title}`,
+			// Plan §H.1 — ADRs surface in the Knowledge folder with the docs emoji.
+			name: prefixName(emojiForCommitType("docs"), `ADR — ${adr.title}`),
 			markdown_content: adr.markdown,
 			status: "Done",
 			priority: priorityToCu("Normal"),
@@ -439,10 +446,15 @@ export function planSpace(
 			`type:${isBug ? "bug-fix" : "chore"}`,
 			`source:${kebab(defaultSource)}`,
 		]);
+		// Plan §H.1 — bug tasks surface with severity emoji (extracted later
+		// from priority); TODO/FIXME items use the chore wrench.
+		const todoEmoji = isBug
+			? emojiForBugSeverity("high")
+			: emojiForCommitType("chore");
 		tasks.push({
 			key: `${isBug ? "bug" : "todo"}:${todo.file}:${todo.line}`,
 			listKey: isBug ? "bugs" : "open_work",
-			name: `${todo.marker}: ${truncate(todo.text, 80)}`,
+			name: prefixName(todoEmoji, `${todo.marker}: ${truncate(todo.text, 80)}`),
 			markdown_content: buildTodoDescription(repo, todo),
 			status: isBug ? "Reported" : "Backlog",
 			priority: priorityToCu(isBug ? "High" : "Low"),
@@ -634,7 +646,10 @@ function planCommitTask(
 	// Strip the conventional-commit prefix from the subject so we don't double it
 	// in the task name (`[date] Feature(api): feat(api): foo` → `: foo`).
 	const cleanSubj = stripConventionalPrefix(subj);
-	const name = `[${dateYmd}] ${commit.type}${scope}: ${truncate(cleanSubj, 80)}`;
+	// Plan §H.1 — emoji prefix per conventional-commit type.
+	const emoji = emojiForCommitType(commit.type);
+	const baseName = `[${dateYmd}] ${commit.type}${scope}: ${truncate(cleanSubj, 80)}`;
+	const name = prefixName(emoji, baseName);
 
 	const epic = classifyEpic(subj, commit.body);
 	const files = commit.filesChanged.map((f) => f.path);
@@ -700,32 +715,47 @@ function buildCommitDescription(
 		: `\`${shortSha(c.sha)}\``;
 	const topFiles = [...c.filesChanged]
 		.sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions))
-		.slice(0, 10)
 		.map(
 			(f) => `- \`${f.path}\` (${f.status}, +${f.additions}/-${f.deletions})`,
 		)
 		.join("\n");
-	return [
-		`**Contributor:** ${ctx.authorDisplay}`,
-		"",
-		`**Commit:** ${shaCell}`,
-		`**Branch:** \`${c.branch ?? "(detached)"}\``,
-		`**Date:** ${c.author.date}`,
-		"",
-		"**Subject:**",
-		`> ${c.subject || "(no subject)"}`,
-		"",
-		"**Body:**",
-		c.body.trim() || "_(no body)_",
-		"",
+	const bodyRaw = c.body.trim();
+
+	// Plan §H.2 — collapsible Files Changed + Body sections so the task
+	// description stays scannable. Header line is a single quote with the
+	// commit summary; details live behind <details> for noise control.
+	const lines: string[] = [];
+	lines.push(`**${c.type}${c.scope ? `(${c.scope})` : ""}: ${c.subject}**`);
+	lines.push("");
+	lines.push(
+		`> commit ${shaCell} · author ${ctx.authorDisplay} · branch \`${c.branch ?? "(detached)"}\` · ${c.author.date}`,
+	);
+	lines.push("");
+	lines.push(
 		`**Impact:** ${c.filesChanged.length} files changed, +${ctx.additions}/-${ctx.deletions}`,
-		"",
-		"**Top files:**",
-		topFiles || "_(no file changes recorded)_",
-		"",
-		"---",
+	);
+	lines.push("");
+	lines.push(
+		`<details><summary>Files changed (${c.filesChanged.length})</summary>`,
+	);
+	lines.push("");
+	lines.push(topFiles || "_(no file changes recorded)_");
+	lines.push("");
+	lines.push("</details>");
+	lines.push("");
+	if (bodyRaw) {
+		lines.push("<details><summary>Commit body</summary>");
+		lines.push("");
+		lines.push(bodyRaw);
+		lines.push("");
+		lines.push("</details>");
+		lines.push("");
+	}
+	lines.push("---");
+	lines.push(
 		`_Auto-imported by clickup-tracker. Type: ${c.type} · Epic: ${ctx.epic} · Sprint: ${c.sprintKey}_`,
-	].join("\n");
+	);
+	return lines.join("\n");
 }
 
 interface AdrEntry {
