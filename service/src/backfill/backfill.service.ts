@@ -211,6 +211,16 @@ export class BackfillService implements OnModuleInit {
 		// silently logged; URL persisted to projects.whiteboard_url when ok.
 		await this.ensureWhiteboard(project, spaceId, creds.token);
 
+		// Step 8d — Plan §J.4 — public bug-intake Form attached to the Bugs
+		// List so non-developers can file structured bug reports without a
+		// CU seat. URL persisted to projects.bug_form_url. Best-effort.
+		await this.ensureBugForm(project, listIdByKey, creds.token);
+
+		// Step 8e — Plan §J.5 — single recurring "Daily Triage" task on
+		// open_work so humans see *one* recurring item instead of N daily
+		// duplicates. Idempotent via task_index["recurring:daily_triage"].
+		await this.ensureCeremonyRecurringTasks(project, listIdByKey, creds.token);
+
 		// Step 9 — tasks.
 		const totalTasks = plan.tasks.length;
 		const taskIndex = { ...project.task_index };
@@ -546,6 +556,101 @@ export class BackfillService implements OnModuleInit {
 		} catch (err) {
 			this.log.debug(
 				`ensureWhiteboard failed (likely paid-tier): ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §J.4 — public bug-intake Form scaffold. Attaches a Form view to
+	 * the Bugs List on first scaffold. Idempotent via the persisted
+	 * bug_form_url (skip when already set).
+	 */
+	private async ensureBugForm(
+		project: BackfillProjectRow,
+		listIdByKey: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		const bugsListId = listIdByKey["bugs"];
+		if (!bugsListId) return;
+		const existing = await this.prisma.$queryRawUnsafe<
+			Array<{ bug_form_url: string | null }>
+		>(
+			`SELECT bug_form_url FROM clickup_tracker.projects WHERE id = $1::uuid`,
+			project.id,
+		);
+		if (existing[0]?.bug_form_url) return;
+		try {
+			const form = await this.clickup.createForm(
+				bugsListId,
+				{
+					name: `${project.display_name} — Report a Bug`,
+					settings: {
+						// Public, no login required.
+						public: true,
+					},
+				},
+				token,
+			);
+			const url = form.url ?? `https://app.clickup.com/forms/${form.id}`;
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects SET bug_form_url = $1, updated_at = NOW() WHERE id = $2::uuid`,
+				url,
+				project.id,
+			);
+		} catch (err) {
+			this.log.debug(
+				`ensureBugForm failed (likely tier-gated): ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §J.5 — create ONE recurring task per ceremony so the team sees
+	 * a single visible item in CU instead of N daily duplicates. Idempotent
+	 * via task_index["recurring:daily_triage"]; skip when already created.
+	 */
+	private async ensureCeremonyRecurringTasks(
+		project: BackfillProjectRow,
+		listIdByKey: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		const owListId = listIdByKey["open_work"];
+		if (!owListId) return;
+		const indexKey = "recurring:daily_triage";
+		if (project.task_index?.[indexKey]) return;
+		try {
+			const created = await this.clickup.createRecurringTask(
+				owListId,
+				{
+					name: "📋 Daily Triage",
+					markdown_content:
+						"_Auto-managed by clickup-tracker. The groomer cron updates this task daily with newly-flagged duplicates, stale bugs, hotspots, and re-prioritisation suggestions._",
+					priority: 3,
+					recurring: {
+						interval: "daily",
+						start: Date.now(),
+					},
+				},
+				token,
+			);
+			// Inline jsonb_set so we don't have to read-merge-write the whole map.
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+				 SET task_index = jsonb_set(
+				   COALESCE(task_index, '{}'::jsonb),
+				   $2,
+				   to_jsonb($3::text),
+				   true
+				 ),
+				 updated_at = NOW()
+				 WHERE id = $1::uuid`,
+				project.id,
+				`{${indexKey}}`,
+				created.id,
+			);
+		} catch (err) {
+			this.log.debug(
+				`ensureCeremonyRecurringTasks failed: ${(err as Error).message}`,
 			);
 		}
 	}

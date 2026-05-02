@@ -877,6 +877,63 @@ export class ClickUpDirectService {
 		return r.view;
 	}
 
+	/**
+	 * Plan §J.4 — Forms. CU's Forms feature lets non-tech users submit
+	 * structured task data (a Form is a List with a public-form view +
+	 * field map). The "create form" operation is implemented as a special
+	 * View attached to a List. Lower tiers 4xx — caller must catch.
+	 *
+	 * The returned URL points at the public submission page; callers
+	 * persist it on the project row so it can be shared.
+	 */
+	async createForm(
+		listId: string,
+		body: { name: string; settings?: Record<string, unknown> },
+		token: string,
+	): Promise<{ id: string; url?: string }> {
+		const r = await this.fetchV2<{
+			view: { id: string; url?: string; settings?: Record<string, unknown> };
+		}>(`/list/${listId}/view`, token, "POST", {
+			name: body.name,
+			type: "form",
+			settings: body.settings ?? undefined,
+		});
+		return { id: r.view.id, url: r.view.url };
+	}
+
+	/**
+	 * Plan §J.5 — recurring tasks. CU exposes recurrence on createTask via
+	 * a `recurring` payload attached to the task body. We use a separate
+	 * helper so callers can keep "one-off task" + "recurring task" code
+	 * paths visually distinct in the planner / standup wiring.
+	 */
+	async createRecurringTask(
+		listId: string,
+		body: {
+			name: string;
+			markdown_content?: string;
+			status?: string;
+			tags?: string[];
+			priority?: 1 | 2 | 3 | 4;
+			recurring: {
+				interval: "daily" | "weekly" | "monthly";
+				days_of_week?: number[]; // 1-7 (Mon-Sun) for weekly
+				start?: number; // ms
+			};
+		},
+		token: string,
+	): Promise<{ id: string }> {
+		// Recurring task uses the standard createTask endpoint with the
+		// `recurring` field set. CU validates the recurrence shape.
+		const r = await this.fetchV2<{ id: string }>(
+			`/list/${listId}/task`,
+			token,
+			"POST",
+			body,
+		);
+		return { id: r.id };
+	}
+
 	// ---------- docs (v3) ----------
 
 	async createDoc(
