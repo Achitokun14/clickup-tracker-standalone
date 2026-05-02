@@ -579,6 +579,13 @@ export function planSpace(
 				"Per-file risk = log1p(churn) × 0.4 + bugs × 1.5 + LOC/1000 × 0.2 + test_age/90 × 0.3._\n\n" +
 				"_Waiting for first commit._",
 		},
+		// Plan §N.9 — Deployments rollup auto-populated by the Railway poll cron.
+		{
+			name: "Deployments",
+			markdown:
+				"_Auto-managed by clickup-tracker — refreshed after each Railway poll cycle._\n\n" +
+				"_Waiting for first deployment. Bind a Railway project via_ `PATCH /projects/:id/railway` _to start populating._",
+		},
 	];
 
 	// 6. Default views per List.

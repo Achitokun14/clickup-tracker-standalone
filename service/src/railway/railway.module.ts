@@ -6,10 +6,12 @@ import { PrismaService } from "../prisma/prisma.service";
 import { ScrumModule } from "../scrum/scrum.module";
 import { DeploymentMirrorService } from "./deployment-mirror.service";
 import { RailwayPollCron } from "./railway-poll.cron";
+import { RailwayWebhookController } from "./railway-webhook.controller";
 import { RailwayApiService } from "./railway.service";
 
 @Module({
 	imports: [ScrumModule],
+	controllers: [RailwayWebhookController],
 	providers: [
 		PrismaService,
 		CredentialsService,

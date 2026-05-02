@@ -243,6 +243,169 @@ export class DeploymentMirrorService {
 			return null;
 		}
 	}
+
+	/**
+	 * Plan §N.9 — refresh the auto-managed `Deployments` page in the
+	 * project's Handbook Doc with the latest 30 deployments.
+	 *
+	 * Idempotent: looks up the page by name once, persists pageId in
+	 * `task_index["doc_page:Deployments"]`. Best-effort — failures
+	 * (no Doc, no page, missing creds) all swallowed at debug.
+	 *
+	 * Caller throttles by only invoking once per poll cycle, not once
+	 * per mirrored deployment.
+	 */
+	async refreshDocPage(projectId: string): Promise<void> {
+		const meta = await this.loadDocMeta(projectId);
+		if (!meta) return;
+		if (!meta.clickup_doc_id) return;
+		let creds;
+		try {
+			creds = await this.credentials.forOrg(meta.organisation_id);
+		} catch {
+			return;
+		}
+		try {
+			let pageId = (meta.task_index ?? {})["doc_page:Deployments"] ?? null;
+			if (!pageId) {
+				const pages = await this.clickup.listDocPages(
+					meta.clickup_team_id,
+					meta.clickup_doc_id,
+					creds.token,
+				);
+				const found = pages.find((p) => p.name === "Deployments");
+				if (!found) return;
+				pageId = found.id;
+				await this.persistDocPageId(projectId, pageId);
+			}
+			const rows = await this.recentDeployments(projectId, 30);
+			const md = renderDeploymentsPageMd(rows);
+			await this.clickup.updateDocPage(
+				meta.clickup_team_id,
+				meta.clickup_doc_id,
+				pageId,
+				{ content: md, content_edit_mode: "replace" },
+				creds.token,
+			);
+		} catch (err) {
+			this.log.debug(
+				`refreshDocPage(${projectId}) failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	private async loadDocMeta(projectId: string): Promise<{
+		organisation_id: string;
+		clickup_team_id: string;
+		clickup_doc_id: string | null;
+		task_index: Record<string, string> | null;
+	} | null> {
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{
+					organisation_id: string;
+					clickup_team_id: string;
+					clickup_doc_id: string | null;
+					task_index: Record<string, string> | null;
+				}>
+			>(
+				`SELECT organisation_id, clickup_team_id, clickup_doc_id, task_index
+				 FROM clickup_tracker.projects
+				 WHERE id = $1::uuid`,
+				projectId,
+			);
+			return rows[0] ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	private async persistDocPageId(
+		projectId: string,
+		pageId: string,
+	): Promise<void> {
+		try {
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+				 SET task_index = jsonb_set(
+				       COALESCE(task_index, '{}'::jsonb),
+				       '{doc_page:Deployments}',
+				       to_jsonb($1::text),
+				       true
+				     ),
+				     updated_at = NOW()
+				 WHERE id = $2::uuid`,
+				pageId,
+				projectId,
+			);
+		} catch {
+			/* best-effort */
+		}
+	}
+
+	private async recentDeployments(
+		projectId: string,
+		limit: number,
+	): Promise<DeploymentRow[]> {
+		try {
+			return await this.prisma.$queryRawUnsafe<DeploymentRow[]>(
+				`SELECT id, environment, status, commit_sha,
+				        started_at, finished_at, cu_task_id
+				 FROM clickup_tracker.railway_deployments
+				 WHERE project_id = $1::uuid
+				 ORDER BY started_at DESC NULLS LAST
+				 LIMIT $2`,
+				projectId,
+				limit,
+			);
+		} catch {
+			return [];
+		}
+	}
+}
+
+interface DeploymentRow {
+	id: string;
+	environment: string;
+	status: string;
+	commit_sha: string | null;
+	started_at: Date | null;
+	finished_at: Date | null;
+	cu_task_id: string | null;
+}
+
+export function renderDeploymentsPageMd(rows: DeploymentRow[]): string {
+	const lines: string[] = [];
+	lines.push("# Deployments");
+	lines.push("");
+	lines.push("_Auto-managed by clickup-tracker. Last 30 deployments per env._");
+	lines.push("");
+	if (rows.length === 0) {
+		lines.push("_No deployments mirrored yet._");
+		return lines.join("\n");
+	}
+	lines.push("| Started | Env | Status | Commit | Duration | CU Task |");
+	lines.push("|---|---|---|---|---|---|");
+	for (const r of rows) {
+		const started = r.started_at
+			? new Date(r.started_at).toISOString().slice(0, 16).replace("T", " ")
+			: "—";
+		const status = `${statusEmoji(r.status)} ${r.status}`;
+		const sha = r.commit_sha ? `\`${r.commit_sha.slice(0, 7)}\`` : "—";
+		const dur =
+			r.started_at && r.finished_at
+				? `${Math.round(
+						(new Date(r.finished_at).getTime() -
+							new Date(r.started_at).getTime()) /
+							1000,
+					)}s`
+				: "—";
+		const link = r.cu_task_id ? `\`${r.cu_task_id}\`` : "—";
+		lines.push(
+			`| ${started} | \`${r.environment}\` | ${status} | ${sha} | ${dur} | ${link} |`,
+		);
+	}
+	return lines.join("\n");
 }
 
 export function durationSeconds(dep: RailwayDeployment): number | null {

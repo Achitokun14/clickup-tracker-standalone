@@ -53,6 +53,7 @@ export class RailwayPollCron {
 
 	private async pollOne(project: BoundProjectRow): Promise<void> {
 		const since = staleness(project.last_railway_poll_at);
+		let mirroredAny = false;
 		for (const serviceId of project.railway_service_ids) {
 			let deployments;
 			try {
@@ -71,12 +72,18 @@ export class RailwayPollCron {
 			for (const dep of deployments) {
 				try {
 					await this.mirror.mirror(project.id, dep);
+					mirroredAny = true;
 				} catch (err) {
 					this.log.debug(
 						`railway-poll mirror ${dep.id} failed: ${(err as Error).message}`,
 					);
 				}
 			}
+		}
+		// Plan §N.9 — refresh the Deployments Doc page once per cycle, only
+		// if at least one deployment was mirrored (avoids hammering CU).
+		if (mirroredAny) {
+			await this.mirror.refreshDocPage(project.id);
 		}
 	}
 
