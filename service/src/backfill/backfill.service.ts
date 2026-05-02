@@ -9,6 +9,7 @@ import {
 	FIELDS_PER_LIST,
 	type ListKey as CustomFieldListKey,
 } from "../clickup/custom-fields";
+import { ViewsService } from "../clickup/views";
 import { tagPalette } from "../util/tag-palette";
 import { CredentialsService } from "../credentials/credentials.service";
 import { GitHistoryExtractor } from "../extractors/git-history.extractor";
@@ -101,6 +102,7 @@ export class BackfillService implements OnModuleInit {
 		private readonly credentials: CredentialsService,
 		private readonly clickup: ClickUpDirectService,
 		private readonly customFields: CustomFieldsService,
+		private readonly views: ViewsService,
 		private readonly gitHistory: GitHistoryExtractor,
 		private readonly repoExtract: RepoExtractExtractor,
 	) {}
@@ -637,6 +639,10 @@ export class BackfillService implements OnModuleInit {
 		listIdByKey: Record<string, string>,
 		token: string,
 	): Promise<void> {
+		// Plan-emitted views first (legacy + extractor-driven). Idempotent
+		// per-list dedupe is handled below by ViewsService for v0.4.0
+		// canonical views; planner-emitted ones may duplicate on re-runs
+		// (best-effort, debug-logged).
 		for (const view of plan.views) {
 			const listId = listIdByKey[view.listKey];
 			if (!listId) continue;
@@ -656,6 +662,18 @@ export class BackfillService implements OnModuleInit {
 				this.log.debug(
 					`createListView(${view.name}) failed: ${(err as Error).message}`,
 				);
+			}
+		}
+
+		// v0.4.0 canonical view set per List (Board/Calendar/Gantt etc.).
+		// Idempotent against re-run.
+		for (const listKey of Object.keys(listIdByKey) as CustomFieldListKey[]) {
+			const listId = listIdByKey[listKey];
+			if (!listId) continue;
+			if (listKey.startsWith("sprint:")) {
+				await this.views.seedViewsForList(listId, "sprint", token);
+			} else {
+				await this.views.seedViewsForList(listId, listKey, token);
 			}
 		}
 	}

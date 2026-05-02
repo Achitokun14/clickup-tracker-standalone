@@ -483,6 +483,45 @@ export class ClickUpDirectService {
 		});
 	}
 
+	/**
+	 * Structured comment with @-mentions. ClickUp v2 accepts a `comment`
+	 * array of segments, each `{ text, attributes? }`. Mention segments use
+	 * `attributes.mention.user_id` to fire a real notification (vs. a plain-
+	 * text "@email" string which CU does NOT auto-mention).
+	 */
+	async addStructuredComment(
+		taskId: string,
+		segments: Array<{
+			text: string;
+			attributes?: {
+				mention?: { user_id: number };
+				bold?: boolean;
+				italic?: boolean;
+				code?: boolean;
+			};
+		}>,
+		token: string,
+		notifyAll = false,
+	): Promise<void> {
+		await this.fetchV2(`/task/${taskId}/comment`, token, "POST", {
+			comment: segments,
+			notify_all: notifyAll,
+		});
+	}
+
+	// ---------- watchers ----------
+
+	async addWatcher(
+		taskId: string,
+		userId: number,
+		token: string,
+	): Promise<void> {
+		// CU v2: POST /task/{id}/watcher with body { watchers: [user_id] }
+		await this.fetchV2(`/task/${taskId}/watcher`, token, "POST", {
+			watchers: [userId],
+		});
+	}
+
 	// ---------- custom fields ----------
 
 	async getListCustomFields(
@@ -642,6 +681,63 @@ export class ClickUpDirectService {
 
 	async deleteWebhook(webhookId: string, token: string): Promise<void> {
 		await this.fetchV2(`/webhook/${webhookId}`, token, "DELETE");
+	}
+
+	// ---------- goals + key results ----------
+
+	async createGoal(
+		teamId: string,
+		body: {
+			name: string;
+			due_date?: number;
+			description?: string;
+			multiple_owners?: boolean;
+			owners?: number[];
+			color?: string;
+		},
+		token: string,
+	): Promise<{ id: string }> {
+		const r = await this.fetchV2<{ goal: { id: string } } | { id: string }>(
+			`/team/${teamId}/goal`,
+			token,
+			"POST",
+			body,
+		);
+		const id =
+			(r as { goal?: { id: string } }).goal?.id ?? (r as { id?: string }).id;
+		if (!id) throw new BadGatewayException("createGoal: missing id");
+		return { id };
+	}
+
+	async createKeyResult(
+		goalId: string,
+		body: {
+			name: string;
+			owners?: number[];
+			type: "number" | "currency" | "boolean" | "percentage" | "automatic";
+			steps_start?: number;
+			steps_end?: number;
+			unit?: string;
+			task_ids?: string[];
+			list_ids?: string[];
+		},
+		token: string,
+	): Promise<{ id: string }> {
+		const r = await this.fetchV2<
+			{ key_result: { id: string } } | { id: string }
+		>(`/goal/${goalId}/key_result`, token, "POST", body);
+		const id =
+			(r as { key_result?: { id: string } }).key_result?.id ??
+			(r as { id?: string }).id;
+		if (!id) throw new BadGatewayException("createKeyResult: missing id");
+		return { id };
+	}
+
+	async closeGoal(goalId: string, token: string): Promise<void> {
+		// CU treats archived=true on the goal as the canonical "close".
+		await this.fetchV2(`/goal/${goalId}`, token, "PUT", {
+			archived: true,
+		});
 	}
 
 	// ---------- views ----------

@@ -88,6 +88,14 @@ class FakeClickUp {
 	async setTaskStatus(taskId: string, status: string) {
 		this.calls.push({ method: "setTaskStatus", args: [taskId, status] });
 	}
+	async createGoal(teamId: string, body: any) {
+		this.calls.push({ method: "createGoal", args: [teamId, body] });
+		return { id: `GOAL_${this.calls.length}` };
+	}
+	async createKeyResult(goalId: string, body: any) {
+		this.calls.push({ method: "createKeyResult", args: [goalId, body] });
+		return { id: `KR_${this.calls.length}` };
+	}
 }
 
 class FakeAudit {
@@ -241,6 +249,46 @@ describe("SprintPlannerService.planSprint (Plan §C.1)", () => {
 		const plan = await svc.planSprint(baseProject.id, true);
 		expect(plan.velocity.recent).toEqual([2]);
 		expect(plan.velocity.points).toBe(2);
+	});
+
+	it("creates a Sprint Goal + automatic Key Result on dryRun=false", async () => {
+		const { svc, cu } = build({ ...baseProject });
+		cu.tasksByList.set("L_ACTIVE", []);
+		cu.tasksByList.set("L_BUGS", []);
+		cu.tasksByList.set("L_OW", [
+			{
+				id: "T_A",
+				name: "[2026-04-20] Feature(api): A",
+				status: { type: "open" },
+			},
+		]);
+		cu.folders = [{ id: "F_HISTORY", name: "📜 History" }];
+
+		await svc.planSprint(baseProject.id, false);
+
+		const goal = cu.calls.find((c) => c.method === "createGoal");
+		expect(goal).toBeDefined();
+		expect((goal!.args[1] as any).name).toMatch(/^Sprint \d{4}-W\d{2}$/);
+
+		const kr = cu.calls.find((c) => c.method === "createKeyResult");
+		expect(kr).toBeDefined();
+		expect((kr!.args[1] as any).type).toBe("automatic");
+		expect((kr!.args[1] as any).list_ids?.length).toBe(1);
+	});
+
+	it("does NOT create a goal on dryRun=true", async () => {
+		const { svc, cu } = build({ ...baseProject });
+		cu.tasksByList.set("L_ACTIVE", []);
+		cu.tasksByList.set("L_BUGS", []);
+		cu.tasksByList.set("L_OW", [
+			{
+				id: "T_A",
+				name: "[2026-04-20] Feature(api): A",
+				status: { type: "open" },
+			},
+		]);
+		await svc.planSprint(baseProject.id, true);
+		expect(cu.calls.find((c) => c.method === "createGoal")).toBeUndefined();
 	});
 });
 

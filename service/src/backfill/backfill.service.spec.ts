@@ -289,12 +289,14 @@ function buildService(prisma: FakePrisma): {
 	const git = new FakeGitHistory();
 	const rext = new FakeRepoExtract();
 	const customFields = new FakeCustomFields();
+	const views = new FakeViews();
 	const svc = new BackfillService(
 		queue as any,
 		prisma as any,
 		creds as any,
 		clickup as any,
 		customFields as any,
+		views as any,
 		git as any,
 		rext as any,
 	);
@@ -307,6 +309,10 @@ class FakeCustomFields {
 	}
 	async persistFieldIds(): Promise<void> {}
 	async setFieldsOnTask(): Promise<void> {}
+}
+
+class FakeViews {
+	async seedViewsForList(): Promise<void> {}
 }
 
 describe("BackfillService", () => {

@@ -509,6 +509,18 @@ export class EventsService {
 			);
 		}
 
+		// 4d. Plan §E.5 — auto-add commit author as a watcher on the new task
+		// so they get CU notifications for status changes / comments. Best-
+		// effort; missing member or 4xx is non-fatal.
+		if (createdTaskId && dto.committer_email && project.clickup_team_id) {
+			await this.tryAddAuthorAsWatcher(
+				createdTaskId,
+				dto.committer_email,
+				project.clickup_team_id,
+				creds.token,
+			);
+		}
+
 		// 4c. Plan §C.3 — file rename annotations + file delete close.
 		await this.tryHandleFileRenames(
 			project,
@@ -1019,6 +1031,54 @@ export class EventsService {
 	 * touched. One CU API call regardless of file count. Skipped entirely
 	 * when the commit only touched code files (the common case).
 	 */
+	/**
+	 * Plan §E.5 — resolve commit author email against members_cache and
+	 * call addWatcher on the newly-created task. Single fetch per
+	 * commit; on miss (external contributor not yet in the workspace) we
+	 * just log at debug. Email comparison is case-insensitive to match
+	 * how members_cache stores keys.
+	 */
+	private async tryAddAuthorAsWatcher(
+		taskId: string,
+		authorEmail: string,
+		teamId: string,
+		token: string,
+	): Promise<void> {
+		try {
+			const cache = await this.loadMembersCache(teamId);
+			const lower = authorEmail.toLowerCase();
+			const userId =
+				cache[lower] ??
+				cache[authorEmail] ??
+				Object.entries(cache).find(([k]) => k.toLowerCase() === lower)?.[1];
+			if (!userId) {
+				this.log.debug(
+					`watcher skip: ${authorEmail} not in members_cache for team ${teamId}`,
+				);
+				return;
+			}
+			await this.clickup.addWatcher(taskId, userId, token);
+		} catch (err) {
+			this.log.debug(
+				`tryAddAuthorAsWatcher(${taskId}, ${authorEmail}) failed: ` +
+					`${(err as Error).message}`,
+			);
+		}
+	}
+
+	private async loadMembersCache(
+		teamId: string,
+	): Promise<Record<string, number>> {
+		const rows = await this.prisma.$queryRawUnsafe<
+			Array<{ members_cache: Record<string, number> | null }>
+		>(
+			`SELECT members_cache FROM clickup_tracker.workspace_settings
+			 WHERE clickup_team_id = $1::text LIMIT 1`,
+			teamId,
+		);
+		return rows[0]?.members_cache ?? {};
+	}
+
 	private async tryAppendArtifactWatch(
 		taskId: string,
 		files: Array<{ path: string; status?: string }>,
