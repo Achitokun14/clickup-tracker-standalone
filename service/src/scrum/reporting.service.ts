@@ -7,6 +7,11 @@ import { PrismaService } from "../prisma/prisma.service";
 import { isoWeekOf, ymd } from "../util/iso-week";
 import { bar, ratio, sparkline } from "../util/progress-bar";
 import { AuditService } from "./audit.service";
+import {
+	type ReviewerSla,
+	ReviewEventsService,
+	renderReviewSlaMd,
+} from "./review-events.service";
 import { isDoneStatus } from "./sprint-planner.service";
 
 /**
@@ -103,6 +108,7 @@ export class ReportingService {
 		private readonly credentials: CredentialsService,
 		private readonly clickup: ClickUpDirectService,
 		private readonly audit: AuditService,
+		private readonly reviewEvents: ReviewEventsService,
 	) {}
 
 	// ── standup ────────────────────────────────────────────────────────
@@ -343,6 +349,9 @@ export class ReportingService {
 			null,
 		);
 
+		// Plan §I.2 — Review SLA section pulled from github_review_events.
+		const reviewerSla = await this.reviewEvents.slaForProject(project.id, 30);
+
 		const markdown = renderRetroMd({
 			projectName: project.display_name,
 			isoWeek: sprintIsoWeek,
@@ -352,6 +361,7 @@ export class ReportingService {
 			newBugs,
 			closedBugs,
 			velocityWindow: (project.velocity_window ?? []).slice(-4),
+			reviewerSla,
 		});
 
 		const report: RetroReport = {
@@ -733,6 +743,7 @@ export function renderRetroMd(args: {
 	newBugs: number;
 	closedBugs: number;
 	velocityWindow: Array<{ iso_week: string; committed_tasks: number }>;
+	reviewerSla?: ReviewerSla[];
 }): string {
 	const lines: string[] = [];
 	const delta = args.deliveredTasks - args.committedTasks;
@@ -783,6 +794,17 @@ export function renderRetroMd(args: {
 		`| Net | ${net >= 0 ? "✓" : "✗"} ${net >= 0 ? "+" : ""}${net} (closed − new) |`,
 	);
 	lines.push("");
+
+	// Plan §I.2 — PR review SLA over the trailing 30 days. Always render
+	// the heading so the reader knows the section *exists* (and isn't just
+	// missing from a stale template); body becomes a friendly placeholder
+	// when no events have been ingested yet.
+	if (args.reviewerSla !== undefined) {
+		lines.push("## Review SLA (last 30 days)");
+		lines.push("");
+		lines.push(renderReviewSlaMd(args.reviewerSla));
+		lines.push("");
+	}
 
 	if (args.carryoverCount >= 3) {
 		lines.push("## ⚠ Carryover spike");
