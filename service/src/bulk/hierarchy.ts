@@ -571,6 +571,14 @@ export function planSpace(
 				"Top-3 owners per file ranked by recency-weighted line deltas._\n\n" +
 				"_Waiting for first commit._",
 		},
+		// Plan §L.3 — Risk Register auto-populated from per-file risk scores.
+		{
+			name: "Risk Register",
+			markdown:
+				"_Auto-managed by clickup-tracker — refreshed nightly. " +
+				"Per-file risk = log1p(churn) × 0.4 + bugs × 1.5 + LOC/1000 × 0.2 + test_age/90 × 0.3._\n\n" +
+				"_Waiting for first commit._",
+		},
 	];
 
 	// 6. Default views per List.

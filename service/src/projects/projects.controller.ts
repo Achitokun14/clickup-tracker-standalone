@@ -5,6 +5,7 @@ import { LookupService } from './lookup.service';
 import { AdoptService, AdoptDto } from './adopt.service';
 import { ContributorService } from '../scrum/contributor.service';
 import { OwnershipService } from '../scrum/ownership.service';
+import { QualityService } from '../scrum/quality.service';
 import { RegisterProjectDto, PatchProjectDto } from './dto/register-project.dto';
 
 /**
@@ -49,6 +50,7 @@ export class ProjectsController {
     private readonly adoptSvc: AdoptService,
     private readonly contributors: ContributorService,
     private readonly ownership: OwnershipService,
+    private readonly quality: QualityService,
   ) {}
 
   /**
@@ -151,6 +153,23 @@ export class ProjectsController {
     });
     // JSON-friendly: serialise the Map as an array of {path, owners}.
     return [...map.entries()].map(([p, owners]) => ({ path: p, owners }));
+  }
+
+  /**
+   * Plan §L.3 — per-file risk scores. Computed on demand from git_events
+   * (no separate materialised view yet — cheap enough for ad-hoc + nightly
+   * groomer runs).
+   */
+  @Get(':id/risk')
+  async riskForProject(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    await this.projects.get(orgIdOrThrow(req), id);
+    return this.quality.computeRiskScores(id, {
+      topN: Number(limit) || 50,
+    });
   }
 
   @Post()
