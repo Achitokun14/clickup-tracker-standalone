@@ -7,6 +7,7 @@ import { AuditService } from "./audit.service";
 import { ContributorService } from "./contributor.service";
 import { GroomerService } from "./groomer.service";
 import { LeadershipService } from "./leadership.service";
+import { OwnershipService } from "./ownership.service";
 import { ReportingService } from "./reporting.service";
 import { ReviewEventsService } from "./review-events.service";
 import { ScrumController } from "./scrum.controller";
@@ -27,6 +28,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		ReportingService,
 		ContributorService,
 		ReviewEventsService,
+		OwnershipService,
 		ScrumScheduler,
 	],
 	exports: [
@@ -37,6 +39,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		ReportingService,
 		ContributorService,
 		ReviewEventsService,
+		OwnershipService,
 	],
 })
 export class ScrumModule {}
