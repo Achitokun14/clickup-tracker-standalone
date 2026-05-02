@@ -1,6 +1,6 @@
 {
 	"name": "clickup-tracker-mcp",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"description": "Universal MCP server that wraps the clickup-tracker daemon HTTP API. Works with any MCP-capable agent (Claude Code, Goose, OpenCode, Cursor, Cline, Continue).",
 	"license": "AGPL-3.0-or-later",
 	"type": "module",

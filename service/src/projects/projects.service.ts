@@ -467,6 +467,61 @@ export class ProjectsService {
 	}
 
 	/**
+	 * Plan §N.10 — recent deployments for the active sprint slash command.
+	 * Best-effort: returns empty when table missing or query errors.
+	 */
+	async recentDeployments(
+		projectId: string,
+		limit: number,
+	): Promise<
+		Array<{
+			id: string;
+			environment: string;
+			status: string;
+			commitSha: string | null;
+			startedAt: string | null;
+			finishedAt: string | null;
+			cuTaskId: string | null;
+		}>
+	> {
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{
+					id: string;
+					environment: string;
+					status: string;
+					commit_sha: string | null;
+					started_at: Date | null;
+					finished_at: Date | null;
+					cu_task_id: string | null;
+				}>
+			>(
+				`SELECT id, environment, status, commit_sha,
+				        started_at, finished_at, cu_task_id
+				 FROM clickup_tracker.railway_deployments
+				 WHERE project_id = $1::uuid
+				 ORDER BY started_at DESC NULLS LAST
+				 LIMIT $2`,
+				projectId,
+				limit,
+			);
+			return rows.map((r) => ({
+				id: r.id,
+				environment: r.environment,
+				status: r.status,
+				commitSha: r.commit_sha,
+				startedAt: r.started_at ? new Date(r.started_at).toISOString() : null,
+				finishedAt: r.finished_at
+					? new Date(r.finished_at).toISOString()
+					: null,
+				cuTaskId: r.cu_task_id,
+			}));
+		} catch {
+			return [];
+		}
+	}
+
+	/**
 	 * Plan §N.2 — bind a project to a Railway project + service set.
 	 * Each field is optional; pass only what changed. `railwayProjectId`
 	 * may be sent as `null` to clear the binding.

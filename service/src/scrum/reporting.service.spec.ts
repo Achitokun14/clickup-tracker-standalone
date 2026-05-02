@@ -1,9 +1,11 @@
 import {
 	extractSubject,
 	isWeekendUtc,
+	renderDeploySummaryMd,
 	renderRetroMd,
 	renderStandupMd,
 	ReportingService,
+	summariseDeployments,
 } from "./reporting.service";
 
 interface FakeProjectRow {
@@ -355,5 +357,102 @@ describe("pure helpers", () => {
 			velocityWindow: [],
 		});
 		expect(md).not.toContain("⚠ Carryover spike");
+	});
+
+	describe("Phase N.7 — deploy summary", () => {
+		it("summariseDeployments rolls up per env with success/fail/cancelled counts", () => {
+			const rows = [
+				{
+					environment: "production",
+					status: "SUCCESS",
+					started_at: "2026-05-01T08:00:00Z",
+					finished_at: "2026-05-01T08:02:00Z",
+				},
+				{
+					environment: "production",
+					status: "FAILED",
+					started_at: "2026-05-01T09:00:00Z",
+					finished_at: "2026-05-01T09:01:00Z",
+				},
+				{
+					environment: "production",
+					status: "SUCCESS",
+					started_at: "2026-05-01T09:30:00Z",
+					finished_at: "2026-05-01T09:32:00Z",
+				},
+				{
+					environment: "staging",
+					status: "CANCELLED",
+					started_at: "2026-05-01T10:00:00Z",
+					finished_at: "2026-05-01T10:00:30Z",
+				},
+			];
+			const s = summariseDeployments(rows, "this sprint");
+			expect(s.total).toBe(4);
+			const prod = s.byEnv.find((e) => e.environment === "production")!;
+			expect(prod.success).toBe(2);
+			expect(prod.failure).toBe(1);
+			expect(prod.cancelled).toBe(0);
+			// MTTR: 09:00 → 09:30 = 1800s
+			expect(prod.mttrSeconds).toBe(1800);
+			const staging = s.byEnv.find((e) => e.environment === "staging")!;
+			expect(staging.cancelled).toBe(1);
+			expect(staging.mttrSeconds).toBeNull();
+		});
+
+		it("renderDeploySummaryMd renders an empty-state message when no rows", () => {
+			const md = renderDeploySummaryMd({
+				window: "24h",
+				total: 0,
+				byEnv: [],
+			});
+			expect(md).toContain("No deployments");
+		});
+
+		it("renderDeploySummaryMd renders a table per env when rows exist", () => {
+			const md = renderDeploySummaryMd({
+				window: "this sprint",
+				total: 3,
+				byEnv: [
+					{
+						environment: "production",
+						total: 3,
+						success: 2,
+						failure: 1,
+						cancelled: 0,
+						mttrSeconds: 1800,
+					},
+				],
+			});
+			expect(md).toContain("**3** deployment(s)");
+			expect(md).toContain("| `production` | 3 | 2 | 1 | 0 | 30m |");
+		});
+
+		it("renderStandupMd embeds deploy summary section when supplied", () => {
+			const md = renderStandupMd({
+				projectName: "P",
+				today: "2026-05-02",
+				isoWeek: "2026-W18",
+				byAuthor: new Map(),
+				openBlockers: [],
+				sprintTasks: [],
+				deploySummary: {
+					window: "24h",
+					total: 1,
+					byEnv: [
+						{
+							environment: "production",
+							total: 1,
+							success: 1,
+							failure: 0,
+							cancelled: 0,
+							mttrSeconds: null,
+						},
+					],
+				},
+			});
+			expect(md).toContain("## Deployments (last 24h)");
+			expect(md).toContain("`production`");
+		});
 	});
 });

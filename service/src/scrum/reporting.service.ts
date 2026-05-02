@@ -198,6 +198,13 @@ export class ReportingService {
 			Array.from(byAuthor.keys()),
 		);
 
+		const since24h = new Date(now.getTime() - 24 * 3600 * 1000);
+		const deploySummary = await this.loadDeploySummary(
+			project.id,
+			since24h,
+			"24h",
+		);
+
 		const markdown = renderStandupMd({
 			projectName: project.display_name,
 			today,
@@ -206,6 +213,7 @@ export class ReportingService {
 			openBlockers,
 			sprintTasks,
 			identities,
+			deploySummary: deploySummary ?? undefined,
 		});
 
 		const report: StandupReport = {
@@ -352,6 +360,13 @@ export class ReportingService {
 		// Plan §I.2 — Review SLA section pulled from github_review_events.
 		const reviewerSla = await this.reviewEvents.slaForProject(project.id, 30);
 
+		// Plan §N.7 — deployment frequency + MTTR over the closing sprint.
+		const deploySummary = await this.loadDeploySummary(
+			project.id,
+			new Date(start),
+			"this sprint",
+		);
+
 		const markdown = renderRetroMd({
 			projectName: project.display_name,
 			isoWeek: sprintIsoWeek,
@@ -362,6 +377,7 @@ export class ReportingService {
 			closedBugs,
 			velocityWindow: (project.velocity_window ?? []).slice(-4),
 			reviewerSla,
+			deploySummary: deploySummary ?? undefined,
 		});
 
 		const report: RetroReport = {
@@ -483,6 +499,39 @@ export class ReportingService {
 			);
 		}
 		return out;
+	}
+
+	/**
+	 * Plan §N.7 — fetch raw deploy rows in [since, now) and summarise per
+	 * env. Returns `null` (not an empty summary) when the table is missing
+	 * so the renderer can omit the section entirely on cold-start daemons.
+	 */
+	private async loadDeploySummary(
+		projectId: string,
+		since: Date,
+		windowLabel: string,
+	): Promise<DeploySummary | null> {
+		try {
+			const rows = await this.prisma.$queryRawUnsafe<
+				Array<{
+					environment: string;
+					status: string;
+					started_at: Date | null;
+					finished_at: Date | null;
+				}>
+			>(
+				`SELECT environment, status, started_at, finished_at
+				 FROM clickup_tracker.railway_deployments
+				 WHERE project_id = $1::uuid
+				   AND COALESCE(started_at, updated_at) >= $2::timestamptz`,
+				projectId,
+				since.toISOString(),
+			);
+			return summariseDeployments(rows, windowLabel);
+		} catch (err) {
+			this.log.debug(`loadDeploySummary failed: ${(err as Error).message}`);
+			return null;
+		}
 	}
 
 	private async loadProject(projectId: string): Promise<ProjectMin | null> {
@@ -626,6 +675,7 @@ export function renderStandupMd(args: {
 			avatar_url: string | null;
 		}
 	>;
+	deploySummary?: DeploySummary;
 }): string {
 	const lines: string[] = [];
 	const open = args.sprintTasks.filter(
@@ -684,6 +734,12 @@ export function renderStandupMd(args: {
 	lines.push("");
 	lines.push("---");
 	lines.push("");
+
+	if (args.deploySummary) {
+		lines.push("## Deployments (last 24h)");
+		lines.push(renderDeploySummaryMd(args.deploySummary));
+		lines.push("");
+	}
 
 	lines.push("## Today");
 	if (args.sprintTasks.length === 0) {
@@ -744,6 +800,7 @@ export function renderRetroMd(args: {
 	closedBugs: number;
 	velocityWindow: Array<{ iso_week: string; committed_tasks: number }>;
 	reviewerSla?: ReviewerSla[];
+	deploySummary?: DeploySummary;
 }): string {
 	const lines: string[] = [];
 	const delta = args.deliveredTasks - args.committedTasks;
@@ -803,6 +860,13 @@ export function renderRetroMd(args: {
 		lines.push("## Review SLA (last 30 days)");
 		lines.push("");
 		lines.push(renderReviewSlaMd(args.reviewerSla));
+		lines.push("");
+	}
+
+	if (args.deploySummary) {
+		lines.push("## Deployment summary (this sprint)");
+		lines.push("");
+		lines.push(renderDeploySummaryMd(args.deploySummary));
 		lines.push("");
 	}
 
@@ -898,4 +962,122 @@ export function formatAuthorHeader(
 		);
 	}
 	return `## ${author}`;
+}
+
+/**
+ * Plan §N.7 — deployment rollup surfaced in standup + retro Doc pages.
+ *
+ * Aggregates from `clickup_tracker.railway_deployments` for a project
+ * over a window: total, success/failure/cancelled counts per env,
+ * mean time-to-recovery (MTTR) for failed-then-recovered streaks.
+ */
+export interface DeploySummary {
+	window: string; // e.g. "24h" or "this sprint"
+	total: number;
+	byEnv: Array<{
+		environment: string;
+		total: number;
+		success: number;
+		failure: number;
+		cancelled: number;
+		mttrSeconds: number | null;
+	}>;
+}
+
+export function renderDeploySummaryMd(s: DeploySummary): string {
+	const lines: string[] = [];
+	if (s.total === 0) {
+		lines.push(`_No deployments in the ${s.window}._`);
+		return lines.join("\n");
+	}
+	lines.push(`Total: **${s.total}** deployment(s) in the ${s.window}.`);
+	lines.push("");
+	lines.push("| Environment | Total | ✅ | ❌ | ⏸ | MTTR |");
+	lines.push("|---|---|---|---|---|---|");
+	for (const e of s.byEnv) {
+		const mttr =
+			e.mttrSeconds == null ? "—" : `${Math.round(e.mttrSeconds / 60)}m`;
+		lines.push(
+			`| \`${e.environment}\` | ${e.total} | ${e.success} | ${e.failure} | ${e.cancelled} | ${mttr} |`,
+		);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Aggregate raw deployment rows (Railway-style status field) into the
+ * shape the renderer needs. MTTR is the average gap from a FAILED row
+ * to the next non-FAILED row (in seconds). Returns 0-row summary when
+ * the input is empty.
+ */
+export function summariseDeployments(
+	rows: Array<{
+		environment: string;
+		status: string;
+		started_at: Date | string | null;
+		finished_at: Date | string | null;
+	}>,
+	window: string,
+): DeploySummary {
+	const byEnv = new Map<
+		string,
+		{
+			total: number;
+			success: number;
+			failure: number;
+			cancelled: number;
+			recoveryGaps: number[];
+			pendingFailureAt: number | null;
+		}
+	>();
+	const sorted = [...rows].sort((a, b) => {
+		const ta = a.started_at ? new Date(a.started_at).getTime() : 0;
+		const tb = b.started_at ? new Date(b.started_at).getTime() : 0;
+		return ta - tb;
+	});
+	for (const r of sorted) {
+		const env = r.environment || "unknown";
+		const stats = byEnv.get(env) ?? {
+			total: 0,
+			success: 0,
+			failure: 0,
+			cancelled: 0,
+			recoveryGaps: [] as number[],
+			pendingFailureAt: null as number | null,
+		};
+		stats.total += 1;
+		const s = r.status?.toUpperCase?.() ?? "";
+		const t = r.started_at ? new Date(r.started_at).getTime() : 0;
+		if (s === "SUCCESS") {
+			stats.success += 1;
+			if (stats.pendingFailureAt && t > stats.pendingFailureAt) {
+				stats.recoveryGaps.push((t - stats.pendingFailureAt) / 1000);
+				stats.pendingFailureAt = null;
+			}
+		} else if (s === "FAILED" || s === "CRASHED") {
+			stats.failure += 1;
+			if (stats.pendingFailureAt == null) stats.pendingFailureAt = t;
+		} else if (s === "CANCELLED" || s === "REMOVED") {
+			stats.cancelled += 1;
+		}
+		byEnv.set(env, stats);
+	}
+	return {
+		window,
+		total: rows.length,
+		byEnv: [...byEnv.entries()]
+			.sort((a, b) => b[1].total - a[1].total)
+			.map(([environment, e]) => ({
+				environment,
+				total: e.total,
+				success: e.success,
+				failure: e.failure,
+				cancelled: e.cancelled,
+				mttrSeconds:
+					e.recoveryGaps.length > 0
+						? e.recoveryGaps.reduce((sum, g) => sum + g, 0) /
+							e.recoveryGaps.length
+						: null,
+			})),
+	};
 }

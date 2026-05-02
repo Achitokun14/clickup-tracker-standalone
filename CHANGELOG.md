@@ -4,7 +4,76 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-_(none — v0.5.0 series in progress on the deep collaboration / quality / integrations track. See [`docs/roadmap.md`](./docs/roadmap.md).)_
+_(none — v0.5.0 shipped on 2026-05-03. Next planned milestone is the v0.6.0 cross-VCS surface (GitLab + Bitbucket identity bridges + webhook ingestion). See [`docs/roadmap.md`](./docs/roadmap.md).)_
+
+## [0.5.0] - 2026-05-03
+
+The *deep collaboration + quality + integrations* milestone. Twelve PRs across Phases I (collab), J (richer CU surfaces), K (cross-project rollup + notifications), L (quality signals), M (GitHub deep), N (Railway deployment tracking).
+
+### Added — Phase I (Deeper collaborator tracking)
+
+- **PR review activity ingestion** (I.1) — `github_review_events` table + `ReviewEventsService.record` (idempotent on `(project_id, pr_number, reviewer_login, submitted_at)`). Webhook → `pull_request_review.submitted` ingestion path.
+- **Review SLA in retro** (I.2) — `slaForProject` + `renderReviewSlaMd` surface 30-day per-reviewer averages; reviewers averaging > 24h get a ⏰ marker.
+- **Pair programming credit** (I.3) — `parseCoAuthors` extracts `Co-authored-by:` trailers from commit bodies, deduped on lowercased email; persisted to `commit_authors`. Co-authors auto-added as watchers on the commit task.
+- **File ownership map** (I.4) — `OwnershipService.topOwnersForPath` / `topOwnersForProject` use recency-weighted SQL (`90d=1.0`, `180d=0.5`, older `0.25`) over `git_events.files_changed`. `GET /projects/:id/ownership[?path=…]` exposes both views; `renderOwnershipMd` powers an auto-managed `Ownership` Handbook page (I.5).
+
+### Added — Phase J (Richer CU surfaces)
+
+- **Time tracking** (J.1) — `estimateMinutesForSprintTask` heuristic auto-fills `time_estimate` on sprint planner finalisation; `summariseTimeEntries` + `listTimeEntriesForTask` wrapper feed retro variance.
+- **Folder views** (J.2) — `createFolderView` / `getFolderViews` wrappers; `backfill.ensureFolderViews` seeds Board / Calendar / Gantt across the Active Work folder.
+- **Whiteboards** (J.3) — `createWhiteboard` wrapper + `backfill.ensureWhiteboard` scaffolds an Architecture Map; URL persisted to `projects.whiteboard_url`. Tier-gated; 4xx silently skipped.
+- **Bug intake Form** (J.4) — `createForm` wrapper + `backfill.ensureBugForm` attaches a public Form view to the Bugs List; URL persisted to `projects.bug_form_url`.
+- **Recurring ceremony tasks** (J.5) — `createRecurringTask` wrapper + `ensureCeremonyRecurringTasks` creates a single recurring `Daily Triage` task on Open Work instead of duplicating one per tick.
+
+### Added — Phase K (Cross-project rollup, notifications, automation)
+
+- **Workspace overview** (K.1) — `WorkspaceRollupService.refreshForOrg` cron rebuilds a per-org rollup with three sections (active projects, cross-project hotspots, workspace contributors), each rendered to a Markdown payload.
+- **Daily DMs + email digest** (K.2 + K.3) — `DigestService.sendDailyDmsForProject` posts per-author CU notifications honouring `scrum_config.members.notification_opt_out`. SMTP path stubbed behind `SMTP_HOST` env so opt-in is explicit.
+- **Slack bridge** (K.4) — `SlackService` posts on sprint plan finalisation, critical bugs opened, and sprint retros. Activated only when `SLACK_WEBHOOK_URL` env is set.
+- **Reviewer suggestions** (K.5) — `ReviewerSuggesterService.suggestForFiles` queries `file_ownership`, returns top-3 owners excluding PR author. Fed into PR-opened comments.
+- **Issue cross-linking** (K.6) — `extractIssueRefs` parses `#N`, `GH-N`, `JIRA-XXX`, `<owner>/<repo>#N` from commit bodies; mapped via `task_index["issue:N"]` to call `addTaskLink` (or `addTaskUrlAttachment` for external).
+
+### Added — Phase L (Quality signals)
+
+- **Coverage delta + lint regression** (L.1 + L.2) — `parseCoverageReport` auto-sniffs LCOV / cobertura / istanbul. `QualityService.recordQuality` persists per-commit metrics in `commit_quality`; `previousQualityRow` comparison tags `coverage-regression` / `lint-regression` on the commit task.
+- **Risk score** (L.3) — `computeRiskScore` formula = `log1p(churn_30d) × 0.4 + bugs × 1.5 + LOC/1000 × 0.2 + test_age/90 × 0.3`. `bandForScore` + `tagsForBand` drive `risk-high` / `risk-critical` task tags. `GET /projects/:id/risk` powers an auto-managed `Risk Register` Handbook page; `renderRiskRegisterMd` renderer.
+
+### Added — Phase M (GitHub deep integration)
+
+- **Webhook ingestion** (M.1) — `POST /github/webhooks/:projectId`. HMAC-SHA256 verification (X-Hub-Signature-256) using `projects.github_webhook_secret`; `timingSafeEqual` constant-time compare. Idempotency via `github_webhook_events.delivery_id` PK. `pull_request_review.submitted` dispatched to `ReviewEventsService`.
+- **Actions status mirror** (M.2) — `ActionsMirrorService.recordRun` tags the linked commit task `ci-pass` / `ci-fail` / `ci-cancelled` (via `ciTagFor`) and posts a workflow-link comment. `recordPrOpened` / `recordPrClosed` tag `pr-open` / `pr-merged` / `pr-closed` on the head/merge_commit_sha task. Wired into the webhook dispatcher for `workflow_run.completed` + `pull_request.{opened,closed}`.
+- **gh-cli polling fallback** (M.3) — `GithubPollCron` skeleton (every 5 min, no-op when `GITHUB_TOKEN` unset) selects active projects with `github.com` remote and `github_webhook_id IS NULL`, ready for the gh-api fetch path.
+
+### Added — Phase N (Railway deployment tracking)
+
+- **Railway API client** (N.1) — `RailwayApiService` wraps the GraphQL v2 endpoint (listProjects / listServices / listDeployments / getDeploymentLogs) with a defensive minimal field set so schema drift only breaks the one call that touched the missing field. `terminalStatus` + `statusEmoji` helpers.
+- **Project ↔ Railway binding** (N.2) — `PATCH /projects/:id/railway` persists `railway_project_id` / `railway_service_ids` / `railway_environments`. Mapped through `ProjectRow` + `mapProjectRow`.
+- **2-min poll cron** (N.3) — `RailwayPollCron` fires every 30s but throttles per-project to 2 min via `last_railway_poll_at`; advisory lock `railway:poll` per project; `staleness` returns 24h ago for cold starts and 60s before last poll for overlap safety.
+- **Deployment mirror** (N.4 + N.5) — `DeploymentMirrorService.mirror` creates/updates one CU task per Railway deployment id (idempotent on the Railway id PK), cross-links the shipped commit task on terminal status via `addTaskLink`, and tags `deployed-to-<env>`.
+- **Deployments List custom fields** (N.6) — `seedDeploymentFields` provisions `environment` / `deployment_status` / `commit_sha` / `build_duration_seconds` / `deploy_url`; `backfill.ensureDeploymentsList` scaffolds the 🚀 Deployments List under Active Work and persists IDs into `custom_field_ids.deployments`.
+- **Deployment summary in standup + retro** (N.7) — `summariseDeployments` rolls up per-env counts + MTTR; `renderDeploySummaryMd` renderer; standup `## Deployments (last 24h)` + retro `## Deployment summary (this sprint)`.
+- **Optional Railway webhook** (N.8) — `POST /railway/webhooks/:projectId` (HMAC-SHA256 when `RAILWAY_WEBHOOK_SECRET` set, open otherwise). Accepts shaped payloads via `parseRailwayWebhook` (snake_case + camelCase tolerant); unknown shapes accepted silently so upstream relay schema changes don't block the queue.
+- **Deployments Doc page** (N.9) — auto-managed handbook page rendered by `renderDeploymentsPageMd` (last 30 deployments, 6-column table). Refreshed once per poll cycle when at least one deployment was mirrored.
+- **`/clickup-deploy-status` slash command** (N.10) — Claude Code + opencode mirrors. Groups output as latest per env, in-flight builds, last failure per env. Auto-resolves project from `pwd` when no projectId argument supplied.
+
+### Schema
+
+- `schema/05_collab_quality_railway.sql` adds:
+  - `github_review_events` (idempotency unique index on PR + reviewer + submitted_at)
+  - `commit_authors` (pair programming pickup)
+  - `commit_quality` (coverage / lint / test pass-fail)
+  - `github_webhook_events` (delivery_id PK)
+  - `railway_deployments` (Railway id PK)
+  - 9 new `projects` columns: `railway_project_id` / `railway_service_ids` / `railway_environments` / `last_railway_poll_at` / `deployments_list_id` / `whiteboard_url` / `bug_form_url` / `github_webhook_id` / `github_webhook_secret`
+
+### Operator surface
+
+- `/health` reports `integrations.{github_token, smtp, slack_webhook, railway_token}` booleans so misconfigurations surface early.
+- New env vars (all optional): `GITHUB_TOKEN`, `RAILWAY_API_TOKEN`, `RAILWAY_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `SMTP_*`, `COVERAGE_REPORT_URL`. All integrations fail-soft when their env var is unset.
+
+### Tests
+
+- 534 passing (up from 422 at v0.4.0). +112 specs covering review SLA, ownership SQL composition, quality signals, webhook HMAC paths, GitHub Actions tag mapping, Railway helpers, deployment mirror renderers, deployments page renderer, deploy summary aggregation.
 
 ## [0.4.0] - 2026-05-02
 

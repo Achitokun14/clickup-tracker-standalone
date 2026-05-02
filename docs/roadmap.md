@@ -13,7 +13,8 @@ timeline
   v0.2.x : Per-repo Spaces<br/>4-folder hierarchy<br/>Doc handbook<br/>Bulk extractors
   v0.3.0 : Autonomous SCRUM operator<br/>Multi-developer adoption<br/>Hotfix triple (branch routing,<br/>doc atomicity, controller fields)<br/>17 PRs · 365 tests
   v0.4.0 : Native CU UI richness<br/>(custom fields, colored tags,<br/>views, goals, watchers, mentions)<br/>GitHub identity bridge<br/>Doc redesign + visual lifecycle<br/>5 PRs · 422 tests
-  v0.5.0 (planned) : Deep collaboration + integrations<br/>(PR review SLA, ownership map,<br/>time tracking, Forms, Whiteboards,<br/>workspace rollup, notifications,<br/>quality signals, GitHub deep,<br/>Railway deployments)<br/>~12 PRs
+  v0.5.0 : Deep collaboration + integrations<br/>(PR review SLA, ownership map,<br/>time tracking, Forms, Whiteboards,<br/>workspace rollup, notifications,<br/>quality signals, GitHub deep,<br/>Railway deployments)<br/>12 PRs · 534 tests
+  v0.6.0 (planned) : Cross-VCS surface<br/>(GitLab + Bitbucket identity,<br/>webhook ingestion, Heroku/Vercel/Fly mirrors)
 ```
 
 ### v0.4.0 ship list (released)
@@ -94,24 +95,24 @@ graph LR
 
 ---
 
-## v0.5.0 PR breakdown
+## v0.5.0 PR breakdown (released 2026-05-03)
 
-| PR | Phase(s) | LOC | Specs |
-|---|---|---|---|
-| PR-6 | I.1 + I.2 + I.3 | ~450 | 14 |
-| PR-7 | I.4 + I.5 | ~350 | 10 |
-| PR-8 | J.1 + J.2 + J.3 | ~500 | 14 |
-| PR-9 | J.4 + J.5 | ~300 | 10 |
-| PR-10 | K.1 + K.2 + K.3 | ~550 | 16 |
-| PR-11 | K.4 + K.5 + K.6 | ~400 | 12 |
-| PR-12 | L.1 + L.2 | ~400 | 10 |
-| PR-13 | L.3 | ~350 | 10 |
-| PR-14 | M.1 | ~600 | 18 |
-| PR-15 | M.2 + M.3 | ~400 | 12 |
-| PR-16 | N.1 + N.2 + N.3 + N.6 | ~700 | 20 |
-| PR-17 | N.4 + N.5 + N.7 + N.8 + N.9 + N.10 | ~550 | 16 |
+| PR | Phase(s) | Status |
+|---|---|---|
+| PR-6 | I.1 + I.2 + I.3 | merged |
+| PR-7 | I.4 + I.5 | merged |
+| PR-8 | J.1 + J.2 + J.3 | merged |
+| PR-9 | J.4 + J.5 | merged |
+| PR-10 | K.1 + K.2 + K.3 | merged |
+| PR-11 | K.4 + K.5 + K.6 | merged |
+| PR-12 | L.1 + L.2 | merged |
+| PR-13 | L.3 | merged |
+| PR-14 | M.1 | merged |
+| PR-15 | M.2 + M.3 | merged |
+| PR-16 | N.1 + N.2 + N.3 + N.6 | merged |
+| PR-17 | N.4 + N.5 + N.7 + N.8 + N.9 + N.10 | merged |
 
-**Total:** ~5550 LOC, ~162 specs across 12 PRs.
+**Total:** 12 PRs · 534 tests passing.
 
 ---
 

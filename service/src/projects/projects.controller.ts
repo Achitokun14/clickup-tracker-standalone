@@ -190,6 +190,22 @@ export class ProjectsController {
   }
 
   /**
+   * Plan §N.10 — recent deployments for the slash command + workspace
+   * overview surface. Returns up to `limit` (default 30) sorted by most
+   * recent. Empty array when project has no Railway binding (or table
+   * not yet provisioned).
+   */
+  @Get(':id/deployments')
+  async deployments(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    await this.projects.get(orgIdOrThrow(req), id);
+    return this.projects.recentDeployments(id, Number(limit) || 30);
+  }
+
+  /**
    * Plan §N.2 — bind a project to a Railway project + service set so the
    * 2-min poll cron can fetch its deployments.
    */
