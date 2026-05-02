@@ -146,13 +146,29 @@ docker compose down -v    # nuke including data (cup_pgdata, cup_redisdata)
 
 ## Documentation
 
+**Foundations**
+
 - [Quickstart](./docs/quickstart.md) — 5-minute end-to-end
-- [Architecture](./docs/architecture.md) — sequence diagrams, queue model
+- [Architecture](./docs/architecture.md) — components, sequences, ER diagrams (mermaid)
 - [API reference](./docs/api-reference.md) — full endpoint table + auth
 - [Deployment](./docs/deployment.md) — Docker, reverse proxy, TLS
 - [Troubleshooting](./docs/troubleshooting.md) — common failures
 - [FAQ](./docs/faq.md) — license, privacy, agent compat
 - [Windows](./docs/windows.md) — Git Bash vs WSL2, Docker Desktop notes
+
+**Feature deep-dives (v0.3.0+)**
+
+- [SCRUM operator](./docs/scrum-operator.md) — autonomous sprint planner / groomer / reporting + 7 autonomy invariants
+- [SCRUM tracked artifacts](./docs/scrum-tracked-artifacts.md) — full catalog of what gets surfaced in CU
+- [Multi-developer adoption](./docs/multi-developer.md) — share one workspace across N daemons
+- [GitHub identity bridge](./docs/github-identity.md) — Phase F (commit email → cached GitHub login + avatar)
+- [Custom fields & views](./docs/custom-fields-and-views.md) — Phase E reference
+- [Space model](./docs/space-model.md) — per-repo Space layout
+- [Runbook](./docs/runbook.md) — operator playbook (backup, restore, rebuild)
+- [Roadmap](./docs/roadmap.md) — released milestones + v0.5.0 (Phases I–N) preview
+
+**Operational**
+
 - [Credentials](./CREDS.md) — what to set up, where to get the tokens
 - [Security policy](./SECURITY.md) — private reporting + rotation guidance
 - [Contributing](./CONTRIBUTING.md) — dev setup + PR flow
