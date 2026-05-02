@@ -83,3 +83,37 @@ export class ContributorService {
 		}));
 	}
 }
+
+/**
+ * Plan §G.3 — render a Contributors Doc page from a contributor list. Pure
+ * (no I/O) so it's trivially testable and reusable by both backfill and the
+ * nightly refresh cron.
+ */
+export function renderContributorsMd(contributors: Contributor[]): string {
+	const lines: string[] = [];
+	lines.push("# Contributors");
+	lines.push("");
+	lines.push(
+		"_Auto-managed by clickup-tracker — refreshed on each commit and nightly._",
+	);
+	lines.push("");
+	if (contributors.length === 0) {
+		lines.push("_No contributors yet — waiting for the first commit._");
+		return lines.join("\n");
+	}
+	lines.push("| Contributor | Commits (30d) | Total | First | Last |");
+	lines.push("|---|---|---|---|---|");
+	for (const c of contributors) {
+		const who =
+			c.githubLogin && c.githubUrl
+				? (c.avatarUrl ? `![](${c.avatarUrl}) ` : "") +
+					`[${c.githubLogin}](${c.githubUrl}) — \`${c.email}\``
+				: `\`${c.email}\``;
+		const first = c.stats.firstSeen ? c.stats.firstSeen.slice(0, 10) : "—";
+		const last = c.stats.lastSeen ? c.stats.lastSeen.slice(0, 10) : "—";
+		lines.push(
+			`| ${who} | ${c.stats.commits30d} | ${c.stats.commitsAllTime} | ${first} | ${last} |`,
+		);
+	}
+	return lines.join("\n");
+}

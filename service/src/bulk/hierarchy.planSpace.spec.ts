@@ -256,15 +256,19 @@ describe("planSpace", () => {
 		expect(adr?.tags).toEqual(expect.arrayContaining(["adr"]));
 	});
 
-	it("emits exactly 5 Doc pages with seeded Setup + Changelog content", () => {
+	it("emits the canonical Handbook pages with seeded Setup + Changelog content", () => {
 		const plan = planSpace(makeRepo(), makeExtract(), makeHistory());
 		expect(plan.doc.name).toBe("Sample Repo Handbook");
+		// Plan §G.3 — original 5 + auto-managed Contributors / Architecture / Dashboard.
 		expect(plan.doc.pages.map((p) => p.name)).toEqual([
 			"Overview",
 			"Setup",
 			"Conventions",
 			"Changelog",
 			"Agent Prompt Log",
+			"Contributors",
+			"Architecture",
+			"Dashboard",
 		]);
 		const setup = plan.doc.pages.find((p) => p.name === "Setup");
 		expect(setup?.markdown).toContain("npm i");
@@ -332,8 +336,8 @@ describe("planSpace", () => {
 		expect(plan.tasks.filter((t) => t.key.startsWith("commit:"))).toHaveLength(
 			0,
 		);
-		// Doc still emitted.
-		expect(plan.doc.pages).toHaveLength(5);
+		// Doc still emitted (5 original + 3 auto-managed handbook pages).
+		expect(plan.doc.pages).toHaveLength(8);
 		// No truncation warning.
 		expect(
 			plan.tasks.find((t) => t.key === "warn:history-truncated"),

@@ -5,6 +5,7 @@ import { runWithPriority } from "../clickup/priority-context";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isoWeekOf, ymd } from "../util/iso-week";
+import { bar, ratio, sparkline } from "../util/progress-bar";
 import { AuditService } from "./audit.service";
 import { isDoneStatus } from "./sprint-planner.service";
 
@@ -617,13 +618,45 @@ export function renderStandupMd(args: {
 	>;
 }): string {
 	const lines: string[] = [];
+	const open = args.sprintTasks.filter(
+		(t) => !isDoneStatus(t.status?.type ?? t.status?.status),
+	);
+	const done = args.sprintTasks.length - open.length;
+
 	lines.push(`# Standup — ${args.today}`);
 	lines.push("");
 	lines.push(`**Project:** ${args.projectName} · **Sprint:** ${args.isoWeek}`);
 	lines.push("");
+
+	// Sprint health blockquote — visual at-a-glance summary.
+	lines.push("> **Sprint Health**");
+	lines.push(`> Progress: \`${bar(done, args.sprintTasks.length, 16)}\``);
+	lines.push(
+		`> Tickets: ${done} done · ${open.length} in flight · ${args.openBlockers.length} blocker(s)`,
+	);
+	lines.push("");
+
+	// Per-author summary table (G.1).
+	lines.push("## Per-author summary");
+	lines.push("");
 	if (args.byAuthor.size === 0) {
 		lines.push("_No commits in the last 24 hours._");
 	} else {
+		lines.push("| Contributor | Yesterday | Top commit |");
+		lines.push("|---|---|---|");
+		for (const [author, commits] of args.byAuthor) {
+			const id = args.identities?.get(author.toLowerCase());
+			const who = formatAuthorCell(author, id);
+			const top = commits[0]
+				? `\`${commits[0].sha.slice(0, 8)}\` ${escapeCell(commits[0].subject)}`
+				: "—";
+			lines.push(`| ${who} | ${commits.length} commit(s) | ${top} |`);
+		}
+		lines.push("");
+
+		// Detailed activity collapsed by default.
+		lines.push("<details><summary>Detailed activity</summary>");
+		lines.push("");
 		for (const [author, commits] of args.byAuthor) {
 			const id = args.identities?.get(author.toLowerCase());
 			lines.push(formatAuthorHeader(author, id));
@@ -636,20 +669,20 @@ export function renderStandupMd(args: {
 			}
 			lines.push("");
 		}
+		lines.push("</details>");
 	}
+	lines.push("");
 	lines.push("---");
 	lines.push("");
+
 	lines.push("## Today");
 	if (args.sprintTasks.length === 0) {
 		lines.push("_No tasks in the current sprint List._");
 	} else {
-		const open = args.sprintTasks.filter(
-			(t) => !isDoneStatus(t.status?.type ?? t.status?.status),
-		);
-		const done = args.sprintTasks.length - open.length;
 		lines.push(
-			`Sprint progress: **${done} done** / ${args.sprintTasks.length} total.`,
+			`Sprint progress: **${ratio(done, args.sprintTasks.length)}** delivered.`,
 		);
+		lines.push("");
 		for (const t of open.slice(0, 10)) {
 			lines.push(`- ${t.name}`);
 		}
@@ -672,6 +705,25 @@ export function renderStandupMd(args: {
 	return lines.join("\n");
 }
 
+function escapeCell(s: string): string {
+	return (s ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+function formatAuthorCell(
+	author: string,
+	identity?: {
+		github_login: string | null;
+		github_url: string | null;
+		avatar_url: string | null;
+	},
+): string {
+	if (identity?.github_login && identity?.github_url) {
+		const avatar = identity.avatar_url ? `![](${identity.avatar_url}) ` : "";
+		return `${avatar}[${identity.github_login}](${identity.github_url})`;
+	}
+	return author;
+}
+
 export function renderRetroMd(args: {
 	projectName: string;
 	isoWeek: string;
@@ -683,32 +735,55 @@ export function renderRetroMd(args: {
 	velocityWindow: Array<{ iso_week: string; committed_tasks: number }>;
 }): string {
 	const lines: string[] = [];
+	const delta = args.deliveredTasks - args.committedTasks;
+	const sign = delta > 0 ? "+" : "";
+	const net = args.closedBugs - args.newBugs;
+
 	lines.push(`# Retro — ${args.isoWeek}`);
 	lines.push("");
 	lines.push(`**Project:** ${args.projectName}`);
 	lines.push("");
+
+	// Velocity sparkline (G.2) — last few sprints' commit count.
 	lines.push("## Velocity");
-	lines.push(`- Committed: **${args.committedTasks} tasks**`);
-	lines.push(`- Delivered: **${args.deliveredTasks} tasks**`);
-	const delta = args.deliveredTasks - args.committedTasks;
-	const sign = delta > 0 ? "+" : "";
-	lines.push(`- Delta: ${sign}${delta}`);
-	lines.push(`- Carryover: ${args.carryoverCount} task(s) into next sprint`);
-	if (args.velocityWindow.length > 0) {
-		const trail = args.velocityWindow
-			.map((v) => `${v.iso_week}=${v.committed_tasks}`)
-			.join(", ");
-		lines.push(`- Recent commits/week: ${trail}`);
-	}
 	lines.push("");
-	lines.push("## Bug throughput (this week)");
-	lines.push(`- Bug-related commits: ${args.newBugs}`);
-	lines.push(`- \`fix\` commits: ${args.closedBugs}`);
-	const net = args.closedBugs - args.newBugs;
 	lines.push(
-		`- Net: ${net >= 0 ? "✓" : "✗"} ${net >= 0 ? "+" : ""}${net} (closed - new)`,
+		`Delivered this sprint: \`${bar(args.deliveredTasks, args.committedTasks, 16)}\``,
 	);
 	lines.push("");
+	lines.push("| Metric | Value |");
+	lines.push("|---|---|");
+	lines.push(`| Committed | **${args.committedTasks}** tasks |`);
+	lines.push(`| Delivered | **${args.deliveredTasks}** tasks |`);
+	lines.push(`| Delta | ${sign}${delta} |`);
+	lines.push(`| Carryover | ${args.carryoverCount} task(s) into next sprint |`);
+	lines.push("");
+	if (args.velocityWindow.length > 0) {
+		const series = args.velocityWindow.map((v) => v.committed_tasks);
+		lines.push(
+			`**Trend (last ${series.length} sprints):** \`${sparkline(series)}\``,
+		);
+		lines.push("");
+		lines.push("| Sprint | Committed |");
+		lines.push("|---|---|");
+		for (const v of args.velocityWindow) {
+			lines.push(`| ${v.iso_week} | ${v.committed_tasks} |`);
+		}
+		lines.push("");
+	}
+
+	// Bug throughput.
+	lines.push("## Bug throughput (this week)");
+	lines.push("");
+	lines.push("| Metric | Value |");
+	lines.push("|---|---|");
+	lines.push(`| Bug-related commits | ${args.newBugs} |`);
+	lines.push(`| \`fix\` commits | ${args.closedBugs} |`);
+	lines.push(
+		`| Net | ${net >= 0 ? "✓" : "✗"} ${net >= 0 ? "+" : ""}${net} (closed − new) |`,
+	);
+	lines.push("");
+
 	if (args.carryoverCount >= 3) {
 		lines.push("## ⚠ Carryover spike");
 		lines.push(

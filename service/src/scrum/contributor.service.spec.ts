@@ -1,6 +1,9 @@
 import { Test } from "@nestjs/testing";
 import { PrismaService } from "../prisma/prisma.service";
-import { ContributorService } from "./contributor.service";
+import {
+	ContributorService,
+	renderContributorsMd,
+} from "./contributor.service";
 
 describe("ContributorService", () => {
 	const fakePrisma = {
@@ -79,5 +82,59 @@ describe("ContributorService", () => {
 		expect(sql).toMatch(/git_events/);
 		expect(sql).toMatch(/github_identities/);
 		expect(sql).toMatch(/COUNT\(\*\)/);
+	});
+});
+
+describe("renderContributorsMd", () => {
+	it("returns the empty placeholder when no contributors", () => {
+		const md = renderContributorsMd([]);
+		expect(md).toContain("# Contributors");
+		expect(md).toContain("No contributors yet");
+	});
+
+	it("renders avatar + login link when identity is known", () => {
+		const md = renderContributorsMd([
+			{
+				email: "alice@x.com",
+				githubLogin: "alice",
+				githubUrl: "https://github.com/alice",
+				avatarUrl: "https://avatars/alice.png",
+				stats: {
+					commits30d: 5,
+					commitsAllTime: 50,
+					bugsOpened30d: 0,
+					bugsClosed30d: 0,
+					epicsTouched: [],
+					firstSeen: "2024-01-01T00:00:00.000Z",
+					lastSeen: "2026-05-01T00:00:00.000Z",
+				},
+			},
+		]);
+		expect(md).toContain("![](https://avatars/alice.png)");
+		expect(md).toContain("[alice](https://github.com/alice)");
+		expect(md).toContain("alice@x.com");
+		expect(md).toContain("| 5 | 50 | 2024-01-01 | 2026-05-01 |");
+	});
+
+	it("falls back to email when no github identity", () => {
+		const md = renderContributorsMd([
+			{
+				email: "ext@nowhere.io",
+				githubLogin: null,
+				githubUrl: null,
+				avatarUrl: null,
+				stats: {
+					commits30d: 0,
+					commitsAllTime: 1,
+					bugsOpened30d: 0,
+					bugsClosed30d: 0,
+					epicsTouched: [],
+					firstSeen: "2026-04-01T00:00:00.000Z",
+					lastSeen: "2026-04-01T00:00:00.000Z",
+				},
+			},
+		]);
+		expect(md).not.toContain("![]");
+		expect(md).toContain("`ext@nowhere.io`");
 	});
 });
