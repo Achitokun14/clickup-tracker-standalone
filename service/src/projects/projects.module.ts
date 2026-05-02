@@ -3,6 +3,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CredentialsService } from "../credentials/credentials.service";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import { CustomFieldsService } from "../clickup/custom-fields";
+import { ViewsService } from "../clickup/views";
 import { ClickUpRateLimiter } from "../clickup/rate-limiter";
 import { BackupService } from "../backup/backup.service";
 import { QueueModule } from "../queue/queue.module";
@@ -22,6 +23,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		ClickUpRateLimiter,
 		ClickUpDirectService,
 		CustomFieldsService,
+		ViewsService,
 		BackupService,
 		ProjectsService,
 		RepairService,
@@ -35,6 +37,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		ClickUpRateLimiter,
 		ClickUpDirectService,
 		CustomFieldsService,
+		ViewsService,
 		BackupService,
 		ProjectsService,
 		RepairService,

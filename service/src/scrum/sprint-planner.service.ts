@@ -278,6 +278,17 @@ export class SprintPlannerService {
 			]),
 		);
 
+		// 9b. Plan §E.4 — create a CU Goal + Key Result for the sprint so
+		// CU's Goals UI shows rolled-up progress. Best-effort; goal creation
+		// failures never block sprint planning.
+		await this.tryCreateSprintGoal(
+			project,
+			plan,
+			sprintListId,
+			isoWeek,
+			creds.token,
+		);
+
 		await this.audit.record({
 			projectId: project.id,
 			kind: "plan_sprint",
@@ -291,6 +302,109 @@ export class SprintPlannerService {
 	}
 
 	// ── helpers ────────────────────────────────────────────────────────
+
+	/**
+	 * Plan §E.4 — best-effort. Creates a CU Goal named after the sprint and
+	 * a single automatic Key Result attached to the sprint List so CU's
+	 * Goals UI shows progress as tasks close. Goal id persisted to
+	 * `projects.scrum_goals[isoWeek]`. Failures never propagate; the only
+	 * audit record is debug-level.
+	 */
+	private async tryCreateSprintGoal(
+		project: ProjectMin,
+		plan: SprintPlan,
+		sprintListId: string,
+		isoWeek: string,
+		token: string,
+	): Promise<void> {
+		try {
+			// Avoid duplicate goal on re-run for the same iso_week.
+			const existing = await this.prisma.$queryRawUnsafe<
+				Array<{ goal_id: string | null }>
+			>(
+				`SELECT scrum_goals -> $2::text AS goal_id
+				 FROM clickup_tracker.projects WHERE id = $1::uuid`,
+				project.id,
+				isoWeek,
+			);
+			if (existing[0]?.goal_id) return;
+
+			const goal = await this.clickup.createGoal(
+				project.clickup_team_id,
+				{
+					name: `Sprint ${isoWeek}`,
+					description:
+						`Goal: ${plan.goal}\n` +
+						`Committed: ${plan.selected.length} tasks ` +
+						`(carryover=${plan.carryoverCount} ` +
+						`bugs=${plan.bugCount} open=${plan.openWorkCount}) · ` +
+						`velocity=${plan.velocity.points}pts ` +
+						`(window=[${plan.velocity.recent.join(",")}])`,
+					due_date:
+						plan.selected.length > 0 ? this.weekEndMs(isoWeek) : undefined,
+				},
+				token,
+			);
+
+			try {
+				await this.clickup.createKeyResult(
+					goal.id,
+					{
+						name: `Tasks Done — ${plan.selected.length} committed`,
+						type: "automatic",
+						list_ids: [sprintListId],
+						steps_start: 0,
+						steps_end: plan.selected.length,
+						unit: "tasks",
+					},
+					token,
+				);
+			} catch (err) {
+				this.log.debug(
+					`createKeyResult for sprint ${isoWeek} failed: ${(err as Error).message}`,
+				);
+			}
+
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+				 SET scrum_goals = jsonb_set(
+				   COALESCE(scrum_goals, '{}'::jsonb),
+				   $2::text[],
+				   to_jsonb($3::text),
+				   true
+				 ),
+				 updated_at = NOW()
+				 WHERE id = $1::uuid`,
+				project.id,
+				`{${isoWeek}}`,
+				goal.id,
+			);
+		} catch (err) {
+			this.log.debug(
+				`tryCreateSprintGoal(${isoWeek}) failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * End of the ISO week as epoch ms. ISO weeks run Monday → Sunday;
+	 * we treat Sunday 23:59:59Z as the deadline. `isoWeek` is `YYYY-Www`.
+	 */
+	private weekEndMs(isoWeek: string): number | undefined {
+		const m = isoWeek.match(/^(\d{4})-W(\d{2})$/);
+		if (!m) return undefined;
+		const year = Number(m[1]);
+		const week = Number(m[2]);
+		// ISO 8601: week 1 contains Jan 4. Compute Monday of week 1, then add (week-1)*7 + 6 days for Sunday.
+		const jan4 = new Date(Date.UTC(year, 0, 4));
+		const jan4Day = jan4.getUTCDay() || 7;
+		const monday = new Date(jan4);
+		monday.setUTCDate(jan4.getUTCDate() - (jan4Day - 1) + (week - 1) * 7);
+		const sunday = new Date(monday);
+		sunday.setUTCDate(monday.getUTCDate() + 6);
+		sunday.setUTCHours(23, 59, 59, 0);
+		return sunday.getTime();
+	}
 
 	private async loadProject(projectId: string): Promise<ProjectMin | null> {
 		const rows = await this.prisma.$queryRawUnsafe<ProjectMin[]>(
