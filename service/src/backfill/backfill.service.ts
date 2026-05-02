@@ -186,7 +186,7 @@ export class BackfillService implements OnModuleInit {
 		await this.ensureTags(spaceId, plan.tags, creds.token);
 
 		// Step 6 — folders + lists (static + sprint lists).
-		const listIdByKey = await this.ensureFoldersAndLists(
+		const { listIdByKey, folderIdsByName } = await this.ensureFoldersAndLists(
 			project,
 			spaceId,
 			plan.folders,
@@ -201,6 +201,15 @@ export class BackfillService implements OnModuleInit {
 
 		// Step 8 — default views per List (best-effort; non-fatal).
 		await this.ensureViews(plan, listIdByKey, creds.token);
+
+		// Step 8b — Plan §J.2 — Folder-level views (Board + Calendar + Gantt
+		// across the Active Work folder). Idempotent via getFolderViews;
+		// failures debug-logged so non-paid tier doesn't break backfill.
+		await this.ensureFolderViews(folderIdsByName, creds.token);
+
+		// Step 8c — Plan §J.3 — Whiteboard scaffold (paid tier only). Failures
+		// silently logged; URL persisted to projects.whiteboard_url when ok.
+		await this.ensureWhiteboard(project, spaceId, creds.token);
 
 		// Step 9 — tasks.
 		const totalTasks = plan.tasks.length;
@@ -454,12 +463,102 @@ export class BackfillService implements OnModuleInit {
 		}
 	}
 
+	/**
+	 * Plan §J.2 — Folder-level Board/Calendar/Gantt views (best-effort).
+	 * Whiteboards / Forms / Folder views all 4xx on lower tiers; we never
+	 * propagate. Idempotency via getFolderViews case-insensitive name match.
+	 */
+	private async ensureFolderViews(
+		folderIdsByName: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		// We attach to the "🚧 Active Work" folder when present (matches
+		// hierarchy.ts canonical name). Multi-folder support is trivial to
+		// extend later — current scope is one Folder of cross-List rollup.
+		const activeFolderId = folderIdsByName["🚧 Active Work"];
+		if (!activeFolderId) return;
+		try {
+			const existing = await this.clickup.getFolderViews(activeFolderId, token);
+			const existingNames = new Set(existing.map((v) => v.name.toLowerCase()));
+			const targets: Array<{
+				name: string;
+				type: "board" | "calendar" | "gantt";
+			}> = [
+				{ name: "Folder Board", type: "board" },
+				{ name: "Folder Calendar", type: "calendar" },
+				{ name: "Folder Timeline", type: "gantt" },
+			];
+			for (const t of targets) {
+				if (existingNames.has(t.name.toLowerCase())) continue;
+				try {
+					await this.clickup.createFolderView(
+						activeFolderId,
+						{ name: t.name, type: t.type },
+						token,
+					);
+				} catch (err) {
+					this.log.debug(
+						`createFolderView(${t.name}) failed: ${(err as Error).message}`,
+					);
+				}
+			}
+		} catch (err) {
+			this.log.debug(
+				`ensureFolderViews failed (folder ${activeFolderId}): ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §J.3 — Whiteboards scaffold. Best-effort: whiteboard creation
+	 * is paid-tier; non-Business workspaces 4xx. Persist the URL to
+	 * projects.whiteboard_url so the Dashboard Doc page can link to it.
+	 */
+	private async ensureWhiteboard(
+		project: BackfillProjectRow,
+		spaceId: string,
+		token: string,
+	): Promise<void> {
+		// Skip when one already attached (idempotent across replans).
+		const existing = await this.prisma.$queryRawUnsafe<
+			Array<{ whiteboard_url: string | null }>
+		>(
+			`SELECT whiteboard_url FROM clickup_tracker.projects WHERE id = $1::uuid`,
+			project.id,
+		);
+		if (existing[0]?.whiteboard_url) return;
+		try {
+			const wb = await this.clickup.createWhiteboard(
+				spaceId,
+				{
+					name: `${project.display_name} — Architecture Map`,
+					description:
+						"Auto-created by clickup-tracker. Pre-populate with module nodes.",
+				},
+				token,
+			);
+			const url = `https://app.clickup.com/${project.clickup_team_id ?? ""}/v/v/${wb.id}`;
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects SET whiteboard_url = $1, updated_at = NOW() WHERE id = $2::uuid`,
+				url,
+				project.id,
+			);
+		} catch (err) {
+			this.log.debug(
+				`ensureWhiteboard failed (likely paid-tier): ${(err as Error).message}`,
+			);
+		}
+	}
+
 	private async ensureFoldersAndLists(
 		project: BackfillProjectRow,
 		spaceId: string,
 		folders: SpaceFolderPlan[],
 		token: string,
-	): Promise<Record<string, string>> {
+	): Promise<{
+		listIdByKey: Record<string, string>;
+		folderIdsByName: Record<string, string>;
+	}> {
 		const listIdByKey: Record<string, string> = { ...project.list_ids };
 		// Merge sprint_lists into the same map for lookup.
 		for (const [key, id] of Object.entries(project.sprint_lists ?? {})) {
@@ -468,6 +567,10 @@ export class BackfillService implements OnModuleInit {
 
 		const existingFolders = await this.clickup.listFolders(spaceId, token);
 		let firstFolderId: string | null = project.clickup_folder_id;
+		// Plan §J.2 — capture each Folder's ID by canonical name so the
+		// folder-view seeder (PR-8) can attach Board / Calendar / Gantt
+		// views at the Folder scope without re-listing.
+		const folderIdsByName: Record<string, string> = {};
 
 		for (const folder of folders) {
 			let existingFolder = existingFolders.find((f) => f.name === folder.name);
@@ -479,6 +582,7 @@ export class BackfillService implements OnModuleInit {
 				);
 			}
 			if (!firstFolderId) firstFolderId = existingFolder.id;
+			folderIdsByName[folder.name] = existingFolder.id;
 
 			const existingLists = await this.clickup.listListsInFolder(
 				existingFolder.id,
@@ -533,7 +637,7 @@ export class BackfillService implements OnModuleInit {
 			JSON.stringify(sprintLists),
 			project.id,
 		);
-		return listIdByKey;
+		return { listIdByKey, folderIdsByName };
 	}
 
 	private async ensureDoc(

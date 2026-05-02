@@ -48,6 +48,8 @@ export interface ClickUpTaskFull {
 	list?: { id: string };
 	custom_fields?: Array<{ id: string; name?: string; value?: unknown }>;
 	date_created?: string;
+	time_estimate?: number;
+	points?: number;
 }
 export interface ClickUpStatus {
 	status: string;
@@ -778,6 +780,99 @@ export class ClickUpDirectService {
 			token,
 			"POST",
 			body,
+		);
+		return r.view;
+	}
+
+	/**
+	 * Plan §J.2 — Folder-level view (Board / Calendar / Gantt across all
+	 * Lists in the Folder). Same shape as createListView but routed at
+	 * /folder/{id}/view. Idempotency is the caller's responsibility — use
+	 * `getFolderViews` first to dedupe.
+	 */
+	async createFolderView(
+		folderId: string,
+		body: {
+			name: string;
+			type:
+				| "list"
+				| "board"
+				| "calendar"
+				| "table"
+				| "timeline"
+				| "workload"
+				| "activity"
+				| "map"
+				| "conversation"
+				| "gantt";
+			grouping?: unknown;
+			sorting?: unknown;
+			filters?: unknown;
+			columns?: unknown;
+			settings?: unknown;
+		},
+		token: string,
+	): Promise<{ id: string }> {
+		const r = await this.fetchV2<{ view: { id: string } }>(
+			`/folder/${folderId}/view`,
+			token,
+			"POST",
+			body,
+		);
+		return r.view;
+	}
+
+	async getFolderViews(
+		folderId: string,
+		token: string,
+	): Promise<Array<{ id: string; name: string; type: string }>> {
+		const r = await this.fetchV2<{
+			views?: Array<{ id: string; name: string; type: string }>;
+		}>(`/folder/${folderId}/view`, token, "GET");
+		return r.views ?? [];
+	}
+
+	/**
+	 * Plan §J.1 — read time entries for a single task. Used by retro
+	 * roll-up to compute actual vs estimate variance.
+	 */
+	async listTimeEntriesForTask(
+		teamId: string,
+		taskId: string,
+		token: string,
+	): Promise<Array<{ id: string; duration: number; user?: { id: number } }>> {
+		const r = await this.fetchV2<{
+			data?: Array<{ id: string; duration: number; user?: { id: number } }>;
+		}>(
+			`/team/${teamId}/time_entries?task_id=${encodeURIComponent(taskId)}`,
+			token,
+			"GET",
+		);
+		return r.data ?? [];
+	}
+
+	/**
+	 * Plan §J.3 — Whiteboards. Creating a Whiteboard is a paid-tier feature;
+	 * non-Business workspaces 4xx. Caller must catch + log gracefully.
+	 *
+	 * The CU API uses a "view" of type "whiteboard" attached to a Space.
+	 */
+	async createWhiteboard(
+		spaceId: string,
+		body: { name: string; description?: string },
+		token: string,
+	): Promise<{ id: string }> {
+		const r = await this.fetchV2<{ view: { id: string } }>(
+			`/space/${spaceId}/view`,
+			token,
+			"POST",
+			{
+				name: body.name,
+				type: "whiteboard",
+				settings: body.description
+					? { description: body.description }
+					: undefined,
+			},
 		);
 		return r.view;
 	}

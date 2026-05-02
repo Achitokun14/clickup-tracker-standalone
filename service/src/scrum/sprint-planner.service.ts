@@ -7,6 +7,7 @@ import {
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
 import type { ClickUpTaskFull } from "../clickup/clickup-direct.service";
 import { runWithPriority } from "../clickup/priority-context";
+import { estimateMinutesForSprintTask } from "../clickup/time-tracking";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { isoWeekOf } from "../util/iso-week";
@@ -254,6 +255,10 @@ export class SprintPlannerService {
 					reason: s.reason,
 					dryRun: false,
 				});
+				// Plan §J.1 — auto-fill time_estimate iff missing. Never
+				// overwrites a user-entered estimate. Type is sniffed from
+				// the conventional-commit prefix in the task name.
+				await this.tryAutoFillTimeEstimate(s.taskId, s.name, creds.token);
 			} catch (err) {
 				this.log.warn(
 					`plan_sprint move failed task=${s.taskId}: ${(err as Error).message}`,
@@ -310,6 +315,31 @@ export class SprintPlannerService {
 	 * `projects.scrum_goals[isoWeek]`. Failures never propagate; the only
 	 * audit record is debug-level.
 	 */
+	/**
+	 * Plan §J.1 — write a heuristic `time_estimate` (ms) on a task ONLY
+	 * if the task currently has none. Type is sniffed from the
+	 * conventional-commit prefix embedded in the task name (e.g.
+	 * `[YYYY-MM-DD] feat(scope): subject`). Best-effort; failures are
+	 * debug-logged so the planner keeps moving.
+	 */
+	private async tryAutoFillTimeEstimate(
+		taskId: string,
+		taskName: string,
+		token: string,
+	): Promise<void> {
+		try {
+			const current = await this.clickup.getTask(taskId, token);
+			if (current.time_estimate && current.time_estimate > 0) return;
+			const type = sniffConventionalType(taskName);
+			const minutes = estimateMinutesForSprintTask({ conventionalType: type });
+			await this.clickup.setTaskTimeEstimate(taskId, minutes * 60_000, token);
+		} catch (err) {
+			this.log.debug(
+				`tryAutoFillTimeEstimate(${taskId}) failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
 	private async tryCreateSprintGoal(
 		project: ProjectMin,
 		plan: SprintPlan,
@@ -548,4 +578,16 @@ export function mergeDefaults(
 	if (typeof cfg.bug_ceiling_pct === "number")
 		out.bug_ceiling_pct = cfg.bug_ceiling_pct;
 	return out;
+}
+
+/**
+ * Plan §J.1 helper — sniff the conventional-commit type from the embedded
+ * task name. Looks for either:
+ *   - emoji-prefixed: "✨ [date] feat(scope): subj" (Plan §H.1)
+ *   - plain:         "[date] feat(scope): subj"
+ * Returns the lowercased type or undefined when no match.
+ */
+export function sniffConventionalType(name: string): string | undefined {
+	const m = /\[\d{4}-\d{2}-\d{2}\]\s+(\w+)/.exec(name ?? "");
+	return m ? m[1].toLowerCase() : undefined;
 }
