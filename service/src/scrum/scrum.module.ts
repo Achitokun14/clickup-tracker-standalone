@@ -10,6 +10,7 @@ import { LeadershipService } from "./leadership.service";
 import { OwnershipService } from "./ownership.service";
 import { ReportingService } from "./reporting.service";
 import { ReviewEventsService } from "./review-events.service";
+import { ReviewerSuggesterService } from "./reviewer-suggester";
 import { WorkspaceRollupService } from "./workspace-rollup.service";
 import { ScrumController } from "./scrum.controller";
 import { ScrumScheduler } from "./scrum.scheduler";
@@ -31,6 +32,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		ReviewEventsService,
 		OwnershipService,
 		WorkspaceRollupService,
+		ReviewerSuggesterService,
 		ScrumScheduler,
 	],
 	exports: [
@@ -43,6 +45,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		ReviewEventsService,
 		OwnershipService,
 		WorkspaceRollupService,
+		ReviewerSuggesterService,
 	],
 })
 export class ScrumModule {}

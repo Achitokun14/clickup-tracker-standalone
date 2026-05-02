@@ -934,6 +934,33 @@ export class ClickUpDirectService {
 		return { id: r.id };
 	}
 
+	/**
+	 * Plan §K.6 — link a CU task to another CU task. POST is idempotent
+	 * server-side (CU dedupes). Returns void; failures bubble.
+	 */
+	async addTaskLink(
+		taskId: string,
+		linkedTaskId: string,
+		token: string,
+	): Promise<void> {
+		await this.fetchV2(`/task/${taskId}/link/${linkedTaskId}`, token, "POST");
+	}
+
+	/**
+	 * Plan §K.6 — attach an external URL to a CU task. CU's attachment
+	 * API takes a multipart upload OR an `attachment` JSON with a URL.
+	 * We use the JSON variant so we don't need to pull a multipart lib.
+	 */
+	async addTaskUrlAttachment(
+		taskId: string,
+		body: { url: string; name?: string },
+		token: string,
+	): Promise<void> {
+		await this.fetchV2(`/task/${taskId}/attachment`, token, "POST", {
+			attachment: { url: body.url, name: body.name ?? body.url },
+		});
+	}
+
 	// ---------- docs (v3) ----------
 
 	async createDoc(

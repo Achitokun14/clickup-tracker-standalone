@@ -4,6 +4,7 @@ import { ClickUpRateLimiter } from "../clickup/rate-limiter";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { DigestService } from "./digest.service";
+import { SlackService } from "./slack.service";
 
 @Module({
 	providers: [
@@ -12,7 +13,8 @@ import { DigestService } from "./digest.service";
 		ClickUpRateLimiter,
 		ClickUpDirectService,
 		DigestService,
+		SlackService,
 	],
-	exports: [DigestService],
+	exports: [DigestService, SlackService],
 })
 export class NotifyModule {}

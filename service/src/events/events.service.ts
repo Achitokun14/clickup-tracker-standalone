@@ -19,6 +19,7 @@ import { isoWeekOf } from "../util/iso-week";
 import { parseGitRemote, type ParsedGitRemote } from "../util/git-remote-parse";
 import { classifyArtifact, normalizeAuthor } from "../util/classify";
 import { parseCoAuthors } from "../util/co-author-parse";
+import { extractIssueRefs } from "../util/issue-refs";
 import {
 	normaliseScope,
 	parseConventional,
@@ -542,6 +543,12 @@ export class EventsService {
 				dto.committer_email ?? null,
 				creds.token,
 			);
+		}
+
+		// 4g. Plan §K.6 — auto-link issue refs in the commit body to existing
+		// CU tasks (via task_index['issue:NN']) or attach the external URL.
+		if (createdTaskId) {
+			await this.tryLinkIssueRefs(project, createdTaskId, cc.body, creds.token);
 		}
 
 		// 4f. Plan §I.3 — record pair-programming partners. `Co-authored-by`
@@ -1209,6 +1216,54 @@ export class EventsService {
 				creds.team_id,
 				creds.token,
 			);
+		}
+	}
+
+	/**
+	 * Plan §K.6 — extract issue refs from a commit body and attach them
+	 * to the new commit task. Local refs (`#NN`, `GH-NN`, `BUG-7`) try
+	 * task_index['issue:NN'] / ['issue:KEY'] for an internal CU link;
+	 * cross-repo refs (`owner/repo#NN`) become external URL attachments.
+	 * All best-effort; per-ref failures debug-logged.
+	 */
+	private async tryLinkIssueRefs(
+		project: ProjectMin,
+		taskId: string,
+		body: string | null | undefined,
+		token: string,
+	): Promise<void> {
+		const refs = extractIssueRefs(body);
+		if (refs.length === 0) return;
+		for (const ref of refs) {
+			try {
+				if (ref.kind === "gh-cross-repo" && ref.ownerRepo && ref.number) {
+					const url = `https://github.com/${ref.ownerRepo}/issues/${ref.number}`;
+					await this.clickup.addTaskUrlAttachment(
+						taskId,
+						{ url, name: ref.raw },
+						token,
+					);
+					continue;
+				}
+				const indexKey =
+					ref.kind === "jira-like" && ref.key
+						? `issue:${ref.key}`
+						: ref.number
+							? `issue:${ref.number}`
+							: null;
+				if (!indexKey) continue;
+				const linkedTaskId = project.task_index?.[indexKey];
+				if (linkedTaskId) {
+					await this.clickup.addTaskLink(taskId, linkedTaskId, token);
+				}
+				// No internal task → silently skip; cross-repo path is the only
+				// one we attach an external URL for, since plain `#7` could be
+				// any tracker.
+			} catch (err) {
+				this.log.debug(
+					`tryLinkIssueRefs ${ref.raw} failed: ${(err as Error).message}`,
+				);
+			}
 		}
 	}
 
