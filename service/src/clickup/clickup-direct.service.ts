@@ -483,7 +483,7 @@ export class ClickUpDirectService {
 		});
 	}
 
-	// ---------- custom fields (Phase 2 — fields must already exist on the List) ----------
+	// ---------- custom fields ----------
 
 	async getListCustomFields(
 		listId: string,
@@ -505,6 +505,48 @@ export class ClickUpDirectService {
 		await this.fetchV2(`/task/${taskId}/field/${fieldId}`, token, "POST", {
 			value,
 		});
+	}
+
+	async createCustomField(
+		listId: string,
+		body: {
+			name: string;
+			type:
+				| "short_text"
+				| "text"
+				| "url"
+				| "email"
+				| "phone"
+				| "number"
+				| "currency"
+				| "date"
+				| "drop_down"
+				| "labels"
+				| "checkbox"
+				| "users"
+				| "task_relationship"
+				| "manual_progress"
+				| "automatic_progress";
+			type_config?: {
+				options?: Array<{ name: string; color?: string; orderindex?: number }>;
+				new_drop_down?: boolean;
+				default?: number;
+				[k: string]: unknown;
+			};
+			required?: boolean;
+		},
+		token: string,
+	): Promise<{ id: string }> {
+		const r = await this.fetchV2<{ field: { id: string } } | { id: string }>(
+			`/list/${listId}/field`,
+			token,
+			"POST",
+			body,
+		);
+		const id =
+			(r as { field?: { id: string } }).field?.id ?? (r as { id?: string }).id;
+		if (!id) throw new BadGatewayException("createCustomField: missing id");
+		return { id };
 	}
 
 	// ---------- checklists ----------
