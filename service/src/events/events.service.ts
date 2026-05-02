@@ -18,6 +18,7 @@ import type {
 import { isoWeekOf } from "../util/iso-week";
 import { parseGitRemote, type ParsedGitRemote } from "../util/git-remote-parse";
 import { classifyArtifact, normalizeAuthor } from "../util/classify";
+import { parseCoAuthors } from "../util/co-author-parse";
 import {
 	normaliseScope,
 	parseConventional,
@@ -540,6 +541,21 @@ export class EventsService {
 				dto.commit_sha,
 				dto.committer_email ?? null,
 				creds.token,
+			);
+		}
+
+		// 4f. Plan §I.3 — record pair-programming partners. `Co-authored-by`
+		// trailers in the commit body get written to commit_authors with
+		// role=co-author (primary author from the DTO is also recorded).
+		// Each resolvable co-author is added as a CU watcher on the new
+		// task so they get notification parity with the primary author.
+		if (createdTaskId) {
+			await this.tryRecordCommitAuthors(
+				project,
+				createdTaskId,
+				dto,
+				cc.body,
+				creds,
 			);
 		}
 
@@ -1132,6 +1148,66 @@ export class EventsService {
 			this.log.debug(
 				`tryAddAuthorAsWatcher(${taskId}, ${authorEmail}) failed: ` +
 					`${(err as Error).message}`,
+			);
+		}
+	}
+
+	/**
+	 * Plan §I.3 — write commit_authors rows (primary + co-authors) and add
+	 * each resolvable co-author as a CU watcher on the new commit task.
+	 * Trailers are parsed from the commit body (`Co-authored-by: Name <email>`).
+	 * Idempotent via the (project_id, commit_sha, email) PK.
+	 */
+	private async tryRecordCommitAuthors(
+		project: ProjectMin,
+		taskId: string,
+		dto: GitEventDto,
+		body: string | null | undefined,
+		creds: { token: string; team_id: string },
+	): Promise<void> {
+		const primary = (dto.committer_email ?? "").toLowerCase().trim();
+		const coAuthors = parseCoAuthors(body ?? null).filter(
+			(a) => a.email !== primary,
+		);
+		// Always upsert primary; only insert co-authors when present. If we
+		// have neither (e.g. anonymous commit), short-circuit.
+		if (!primary && coAuthors.length === 0) return;
+		try {
+			if (primary) {
+				await this.prisma.$executeRawUnsafe(
+					`INSERT INTO clickup_tracker.commit_authors
+					   (project_id, commit_sha, email, role)
+					 VALUES ($1::uuid, $2, $3, 'primary')
+					 ON CONFLICT (project_id, commit_sha, email) DO NOTHING`,
+					project.id,
+					dto.commit_sha,
+					primary,
+				);
+			}
+			for (const ca of coAuthors) {
+				await this.prisma.$executeRawUnsafe(
+					`INSERT INTO clickup_tracker.commit_authors
+					   (project_id, commit_sha, email, role)
+					 VALUES ($1::uuid, $2, $3, 'co-author')
+					 ON CONFLICT (project_id, commit_sha, email) DO NOTHING`,
+					project.id,
+					dto.commit_sha,
+					ca.email,
+				);
+			}
+		} catch (err) {
+			this.log.debug(
+				`tryRecordCommitAuthors write failed: ${(err as Error).message}`,
+			);
+		}
+		// Add resolvable co-authors as watchers (best-effort). Primary is
+		// already added in step 4d.
+		for (const ca of coAuthors) {
+			await this.tryAddAuthorAsWatcher(
+				taskId,
+				ca.email,
+				creds.team_id,
+				creds.token,
 			);
 		}
 	}

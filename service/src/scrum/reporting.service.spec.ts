@@ -117,13 +117,17 @@ function build(project: FakeProjectRow) {
 	const creds = new FakeCredentials();
 	const cu = new FakeClickUp();
 	const audit = new FakeAudit();
+	const reviewEvents = {
+		slaForProject: jest.fn().mockResolvedValue([]),
+	};
 	const svc = new ReportingService(
 		prisma as any,
 		creds as any,
 		cu as any,
 		audit as any,
+		reviewEvents as any,
 	);
-	return { svc, prisma, cu, audit };
+	return { svc, prisma, cu, audit, reviewEvents };
 }
 
 const baseProject: FakeProjectRow = {
