@@ -4,6 +4,7 @@ import { ClickUpRateLimiter } from "../clickup/rate-limiter";
 import { CredentialsService } from "../credentials/credentials.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "./audit.service";
+import { ContributorService } from "./contributor.service";
 import { GroomerService } from "./groomer.service";
 import { LeadershipService } from "./leadership.service";
 import { ReportingService } from "./reporting.service";
@@ -23,6 +24,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		SprintPlannerService,
 		GroomerService,
 		ReportingService,
+		ContributorService,
 		ScrumScheduler,
 	],
 	exports: [
@@ -31,6 +33,7 @@ import { SprintPlannerService } from "./sprint-planner.service";
 		SprintPlannerService,
 		GroomerService,
 		ReportingService,
+		ContributorService,
 	],
 })
 export class ScrumModule {}

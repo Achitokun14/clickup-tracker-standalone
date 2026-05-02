@@ -13,6 +13,8 @@ import { ProjectsService } from "./projects.service";
 import { LookupService } from "./lookup.service";
 import { AdoptService } from "./adopt.service";
 import { OrphanDetectionCron } from "./orphan-detection.cron";
+import { GithubIdentityService } from "./github-identity.service";
+import { ContributorService } from "../scrum/contributor.service";
 
 @Module({
 	imports: [QueueModule],
@@ -30,6 +32,8 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		LookupService,
 		AdoptService,
 		OrphanDetectionCron,
+		GithubIdentityService,
+		ContributorService,
 	],
 	exports: [
 		PrismaService,
@@ -43,6 +47,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		RepairService,
 		LookupService,
 		AdoptService,
+		GithubIdentityService,
 	],
 })
 export class ProjectsModule {}
