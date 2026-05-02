@@ -441,6 +441,18 @@ export class ProjectsService {
 			next.display_name,
 			next.status,
 		);
+		// Plan §M.1 — operator-set GitHub webhook secret. Stored separately
+		// so a future PR can rotate without re-PATCHing the whole row.
+		if (dto.githubWebhookSecret !== undefined) {
+			await this.prisma.$executeRawUnsafe(
+				`UPDATE clickup_tracker.projects
+         SET github_webhook_secret = $3, updated_at = NOW()
+         WHERE organisation_id = $1::uuid AND id = $2::uuid`,
+				orgId,
+				projectId,
+				dto.githubWebhookSecret,
+			);
+		}
 		return rows[0];
 	}
 
