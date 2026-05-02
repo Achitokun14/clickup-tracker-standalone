@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CredentialsService } from "../credentials/credentials.service";
 import { ClickUpDirectService } from "../clickup/clickup-direct.service";
+import { CustomFieldsService } from "../clickup/custom-fields";
 import { ClickUpRateLimiter } from "../clickup/rate-limiter";
 import { BackupService } from "../backup/backup.service";
 import { QueueModule } from "../queue/queue.module";
@@ -20,6 +21,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		CredentialsService,
 		ClickUpRateLimiter,
 		ClickUpDirectService,
+		CustomFieldsService,
 		BackupService,
 		ProjectsService,
 		RepairService,
@@ -32,6 +34,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 		CredentialsService,
 		ClickUpRateLimiter,
 		ClickUpDirectService,
+		CustomFieldsService,
 		BackupService,
 		ProjectsService,
 		RepairService,

@@ -4,6 +4,12 @@ import {
 	type ClickUpStatus,
 	ClickUpDirectService,
 } from "../clickup/clickup-direct.service";
+import {
+	CustomFieldsService,
+	FIELDS_PER_LIST,
+	type ListKey as CustomFieldListKey,
+} from "../clickup/custom-fields";
+import { tagPalette } from "../util/tag-palette";
 import { CredentialsService } from "../credentials/credentials.service";
 import { GitHistoryExtractor } from "../extractors/git-history.extractor";
 import { RepoExtractExtractor } from "../extractors/repo-extract.extractor";
@@ -94,6 +100,7 @@ export class BackfillService implements OnModuleInit {
 		private readonly prisma: PrismaService,
 		private readonly credentials: CredentialsService,
 		private readonly clickup: ClickUpDirectService,
+		private readonly customFields: CustomFieldsService,
 		private readonly gitHistory: GitHistoryExtractor,
 		private readonly repoExtract: RepoExtractExtractor,
 	) {}
@@ -183,6 +190,9 @@ export class BackfillService implements OnModuleInit {
 			plan.folders,
 			creds.token,
 		);
+
+		// Step 6b — seed canonical custom fields per List + persist field id map.
+		await this.ensureCustomFields(projectId, listIdByKey, creds.token);
 
 		// Step 7 — Doc + pages (best-effort; non-fatal if v3 path rejects).
 		await this.ensureDoc(project, spaceId, creds.team_id, plan, creds.token);
@@ -388,11 +398,55 @@ export class BackfillService implements OnModuleInit {
 		const have = new Set(existing.map((t) => (t.name ?? "").toLowerCase()));
 		for (const name of want) {
 			if (have.has(name.toLowerCase())) continue;
+			const { fg, bg } = tagPalette(name);
 			try {
-				await this.clickup.createSpaceTag(spaceId, name, token);
+				await this.clickup.createSpaceTag(spaceId, name, token, fg, bg);
 			} catch (err) {
 				this.log.debug(
 					`createSpaceTag(${name}) failed: ${(err as Error).message}`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Seed canonical custom fields per List. Idempotent (re-uses existing
+	 * fields by name). Persists `{listKey: {fieldKey: fieldId}}` to
+	 * `projects.custom_field_ids`. Best-effort — per-List failures logged
+	 * but never fatal.
+	 */
+	private async ensureCustomFields(
+		projectId: string,
+		listIdByKey: Record<string, string>,
+		token: string,
+	): Promise<void> {
+		for (const listKey of Object.keys(
+			FIELDS_PER_LIST,
+		) as CustomFieldListKey[]) {
+			const listId = listIdByKey[listKey];
+			if (!listId) continue;
+			const ids = await this.customFields.seedFieldsForList(
+				listId,
+				listKey,
+				token,
+			);
+			if (Object.keys(ids).length > 0) {
+				await this.customFields.persistFieldIds(projectId, listKey, ids);
+			}
+		}
+		// Sprint history Lists share active_sprint's field schema.
+		for (const [key, listId] of Object.entries(listIdByKey)) {
+			if (!key.startsWith("sprint:")) continue;
+			const ids = await this.customFields.seedFieldsForList(
+				listId,
+				"active_sprint",
+				token,
+			);
+			if (Object.keys(ids).length > 0) {
+				await this.customFields.persistFieldIds(
+					projectId,
+					`sprint:${key.slice("sprint:".length)}` as CustomFieldListKey,
+					ids,
 				);
 			}
 		}
