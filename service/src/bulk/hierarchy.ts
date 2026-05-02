@@ -563,6 +563,14 @@ export function planSpace(
 				"_Auto-populated by the daemon. Re-renders after Lists + views are seeded._\n\n" +
 				"_Waiting for first backfill._",
 		},
+		// Plan §I.5 — Ownership map auto-managed by the groomer daily refresh.
+		{
+			name: "Ownership",
+			markdown:
+				"_Auto-managed by clickup-tracker — refreshed nightly. " +
+				"Top-3 owners per file ranked by recency-weighted line deltas._\n\n" +
+				"_Waiting for first commit._",
+		},
 	];
 
 	// 6. Default views per List.

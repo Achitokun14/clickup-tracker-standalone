@@ -4,6 +4,7 @@ import { RepairService } from '../repair/repair.service';
 import { LookupService } from './lookup.service';
 import { AdoptService, AdoptDto } from './adopt.service';
 import { ContributorService } from '../scrum/contributor.service';
+import { OwnershipService } from '../scrum/ownership.service';
 import { RegisterProjectDto, PatchProjectDto } from './dto/register-project.dto';
 
 /**
@@ -47,6 +48,7 @@ export class ProjectsController {
     private readonly lookupSvc: LookupService,
     private readonly adoptSvc: AdoptService,
     private readonly contributors: ContributorService,
+    private readonly ownership: OwnershipService,
   ) {}
 
   /**
@@ -122,6 +124,33 @@ export class ProjectsController {
     // Verify project belongs to caller's org first.
     await this.projects.get(orgIdOrThrow(req), id);
     return this.contributors.listForProject(id);
+  }
+
+  /**
+   * Plan §I.4-I.5 — file ownership (recency-weighted line deltas).
+   *
+   *   GET /projects/:id/ownership                     — top-3 owners per
+   *                                                     file across the
+   *                                                     project (capped 200)
+   *   GET /projects/:id/ownership?path=service/src/x  — top-3 owners for
+   *                                                     a single path
+   */
+  @Get(':id/ownership')
+  async ownershipForProject(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('path') path?: string,
+    @Query('limit') limit?: string,
+  ) {
+    await this.projects.get(orgIdOrThrow(req), id);
+    if (path) {
+      return this.ownership.topOwnersForPath(id, path, Number(limit) || 3);
+    }
+    const map = await this.ownership.topOwnersForProject(id, {
+      topN: Number(limit) || 3,
+    });
+    // JSON-friendly: serialise the Map as an array of {path, owners}.
+    return [...map.entries()].map(([p, owners]) => ({ path: p, owners }));
   }
 
   @Post()
