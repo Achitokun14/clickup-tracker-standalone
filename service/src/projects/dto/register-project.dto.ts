@@ -67,4 +67,9 @@ export class PatchProjectDto {
 	@IsOptional()
 	@IsString()
 	status?: "active" | "paused" | "removed";
+
+	/** Plan §M.1 — operator-set HMAC secret for the GitHub webhook. */
+	@IsOptional()
+	@IsString()
+	githubWebhookSecret?: string;
 }
