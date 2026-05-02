@@ -16,6 +16,7 @@ import { OrphanDetectionCron } from "./orphan-detection.cron";
 import { GithubIdentityService } from "./github-identity.service";
 import { ContributorService } from "../scrum/contributor.service";
 import { OwnershipService } from "../scrum/ownership.service";
+import { QualityService } from "../scrum/quality.service";
 
 @Module({
 	imports: [QueueModule],
@@ -36,6 +37,7 @@ import { OwnershipService } from "../scrum/ownership.service";
 		GithubIdentityService,
 		ContributorService,
 		OwnershipService,
+		QualityService,
 	],
 	exports: [
 		PrismaService,
