@@ -39,6 +39,11 @@ import type {
 	TodoMatch,
 	ViewDef,
 } from "./types";
+import {
+	PMP_LIST_STATUSES,
+	PMP_TEMPLATE,
+	renderPmpMarkdown,
+} from "./pmp-template";
 
 export const LIST_NAMES: Record<ListKey, string> = {
 	overview: "Overview & Docs",
@@ -292,6 +297,21 @@ export const SPACE_FOLDERS: SpaceFolderPlan[] = [
 			{ key: "agent_sessions", name: "Agent Sessions" },
 		],
 	},
+	// Plan §O — PMP / PMI / PMBOK style charter overlay (v0.6.0).
+	// Auto-seeded with 19 template tasks; idempotent via task_index["pmp:*"].
+	// List uses a 3-status override so the section reads as a charter,
+	// not a sprint board.
+	{
+		name: "📘 Project Plan",
+		emoji: "📘",
+		lists: [
+			{
+				key: "project_plan",
+				name: "Project Plan",
+				statusOverrides: PMP_LIST_STATUSES,
+			},
+		],
+	},
 ];
 
 /** ClickUp Space features required by the plan. Booleans only — the API
@@ -335,6 +355,7 @@ const STATIC_SOURCE_TAGS = [
 	"source:cursor",
 	"source:cline",
 	"source:continue",
+	"source:pmp-template",
 ];
 
 const STATIC_TYPE_TAGS = [
@@ -587,6 +608,20 @@ export function planSpace(
 				"_Waiting for first deployment. Bind a Railway project via_ `PATCH /projects/:id/railway` _to start populating._",
 		},
 	];
+
+	// 5b. Plan §O — PMP / PMI / PMBOK style charter overlay. Seeded once
+	// per Space; backfill loop skips entries already in task_index, so
+	// this is safely re-runnable on every plan/replan cycle.
+	for (const t of PMP_TEMPLATE) {
+		tasks.push({
+			key: `pmp:${t.key}`,
+			listKey: "project_plan",
+			name: t.name,
+			markdown_content: renderPmpMarkdown(t, repo.displayName),
+			status: t.status,
+			tags: ["docs", "source:pmp-template"],
+		});
+	}
 
 	// 6. Default views per List.
 	const views: ViewDef[] = buildDefaultViews(folders);

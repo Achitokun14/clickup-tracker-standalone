@@ -331,12 +331,13 @@ describe("BackfillService", () => {
 		const created = clickup.calls.filter((c) => c.method === "createTask");
 		expect(created.length).toBeGreaterThan(0);
 
-		// folders + lists were emitted (4 folders + at least 6 lists incl. sprint).
+		// folders + lists were emitted: 5 folders (incl. Plan §O Project Plan)
+		// + at least 7 lists incl. sprint.
 		const folders = clickup.calls.filter((c) => c.method === "createFolder");
 		const lists = clickup.calls.filter(
 			(c) => c.method === "createListInFolder",
 		);
-		expect(folders.length).toBe(4);
+		expect(folders.length).toBe(5);
 		expect(lists.length).toBeGreaterThanOrEqual(7);
 	});
 
