@@ -4,7 +4,28 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-_(none — v0.5.0 shipped on 2026-05-03. Next planned milestone is the v0.6.0 cross-VCS surface (GitLab + Bitbucket identity bridges + webhook ingestion). See [`docs/roadmap.md`](./docs/roadmap.md).)_
+_(none — v0.6.0 shipped on 2026-05-05 with the PMP charter overlay; see entry below. The cross-VCS surface (GitLab + Bitbucket identity bridges + webhook ingestion) remains queued for v0.7.0. See [`docs/roadmap.md`](./docs/roadmap.md).)_
+
+## [0.6.0] - 2026-05-05
+
+The *PMP / project-charter overlay* milestone. One PR across Phase O — every per-repo Space gains a `📘 Project Plan` Folder seeded with 19 PMI/PMBOK template tasks (Scope Management, Risk Log, RACI Matrix, Communication Plan, …) so a non-technical reader can land in a Space and immediately read the charter context that the dev-flow Folders don't carry.
+
+### Added — Phase O (Project Plan overlay)
+
+- **`📘 Project Plan` Folder** as the 5th static Folder in `SPACE_FOLDERS` (`service/src/bulk/hierarchy.ts`), positioned after `📚 Knowledge` so existing scaffold ordinals are preserved.
+- **`Project Plan` List** with a 3-status override (`To Do` / `In Progress` / `Complete`) routed through the existing `statusOverrides` → `setListStatuses()` plumbing — reads as a charter, not a sprint board.
+- **19 template tasks** seeded from the canonical PMI checklist: Scope Management, Project Assumptions and Constraints, Executive Summary, Purpose, Regulatory Compliance, Resource & Material Procurement, Audit Schedule, Resource Plan, Deployment Plan, Cost & Budget, Communication Plan, PM Plan Approval, Project Schedule, Project Dependencies, Risk Log, Project Milestones, RACI Matrix, Quality Management Plan. Initial status distribution: 4 complete · 6 in progress · 9 to do.
+- **`renderPmpMarkdown(task, displayName)`** in `service/src/bulk/pmp-template.ts` — substitutes the project's display name into each section header, sanitises smart quotes / non-breaking spaces, and converts both whole-line and inline `[Insert ...]` placeholders into operator-action blockquotes (`> _Operator action: …_`) so they're visually distinct from real charter content.
+- **Idempotent re-seed** — `task_index["pmp:<key>"]` skips already-seeded tasks; existing Spaces upgrade lazily on the next backfill tick (no Space wipe, no schema apply). Daemon never overwrites operator edits — names, statuses and bodies are managed by humans after first creation.
+- **`source:pmp-template` static tag** added to `STATIC_SOURCE_TAGS` so the Space tag pre-creation step covers the new origin.
+
+### Tests
+
+- 544 passing (up from 534 at v0.5.0). +10 specs covering the template fixture (length, key uniqueness, status distribution), the renderer (display-name substitution, smart-quote stripping, placeholder transforms, footer), the planSpace integration (5 folders, 19 PMP tasks emitted on cold-start, no leak of CSV-source project name), and a refresh of `backfill.service.spec.ts` + `repair.service.spec.ts` to handle the new folder count and use a dynamically-computed iso-week so the repair test stops drifting weekly.
+
+### Operator surface
+
+- No new env vars, no schema apply. Live Spaces upgrade automatically on the first backfill tick after the new code is deployed.
 
 ## [0.5.0] - 2026-05-03
 

@@ -14,7 +14,8 @@ timeline
   v0.3.0 : Autonomous SCRUM operator<br/>Multi-developer adoption<br/>Hotfix triple (branch routing,<br/>doc atomicity, controller fields)<br/>17 PRs · 365 tests
   v0.4.0 : Native CU UI richness<br/>(custom fields, colored tags,<br/>views, goals, watchers, mentions)<br/>GitHub identity bridge<br/>Doc redesign + visual lifecycle<br/>5 PRs · 422 tests
   v0.5.0 : Deep collaboration + integrations<br/>(PR review SLA, ownership map,<br/>time tracking, Forms, Whiteboards,<br/>workspace rollup, notifications,<br/>quality signals, GitHub deep,<br/>Railway deployments)<br/>12 PRs · 534 tests
-  v0.6.0 (planned) : Cross-VCS surface<br/>(GitLab + Bitbucket identity,<br/>webhook ingestion, Heroku/Vercel/Fly mirrors)
+  v0.6.0 : PMP / project-charter overlay<br/>(📘 Project Plan Folder + 19 PMI/PMBOK template tasks<br/>seeded on every Space; 3-status charter view)<br/>1 PR · 544 tests
+  v0.7.0 (planned) : Cross-VCS surface<br/>(GitLab + Bitbucket identity,<br/>webhook ingestion, Heroku/Vercel/Fly mirrors)
 ```
 
 ### v0.4.0 ship list (released)
@@ -113,6 +114,18 @@ graph LR
 | PR-17 | N.4 + N.5 + N.7 + N.8 + N.9 + N.10 | merged |
 
 **Total:** 12 PRs · 534 tests passing.
+
+---
+
+## v0.6.0 — PMP / project-charter overlay (released 2026-05-05)
+
+| PR | Phase(s) | Status |
+|---|---|---|
+| PR-18 | O — `📘 Project Plan` Folder + 19 PMI template tasks | merged |
+
+**Total:** 1 PR · 544 tests passing.
+
+Every per-repo Space now ships with a 5th `📘 Project Plan` Folder seeded with 19 charter sections (Scope Management, Risk Log, RACI Matrix, Communication Plan, …) on a dedicated 3-status List. Idempotent via `task_index["pmp:*"]`; existing Spaces upgrade lazily on the next backfill tick. No schema apply, no Space wipe.
 
 ---
 

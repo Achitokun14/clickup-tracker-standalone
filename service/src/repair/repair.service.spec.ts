@@ -1,4 +1,9 @@
 import { RepairService } from "./repair.service";
+import { isoWeekOf } from "../util/iso-week";
+
+// Sprint-list lookup is keyed by today's iso-week. Compute it dynamically
+// so this test stops drifting every Monday.
+const CURRENT_ISO_WEEK = isoWeekOf(new Date()).key;
 
 interface FakeProjectRow {
 	id: string;
@@ -77,7 +82,7 @@ const baseProject: FakeProjectRow = {
 		active_sprint: "L_ACTIVE",
 		open_work: "L_OPEN",
 	},
-	sprint_lists: { "2026-W18": "L_SPRINT_18" },
+	sprint_lists: { [CURRENT_ISO_WEEK]: "L_SPRINT_18" },
 	task_index: {
 		"commit:abc1234": "T_CANONICAL",
 	},

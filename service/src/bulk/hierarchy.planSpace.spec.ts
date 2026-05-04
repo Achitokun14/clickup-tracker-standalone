@@ -101,10 +101,20 @@ describe("planSpace", () => {
 			"🚧 Active Work",
 			"📜 History",
 			"📚 Knowledge",
+			"📘 Project Plan",
 		]);
 		const history = plan.folders.find((f) => f.name === "📜 History");
 		expect(history?.lists).toEqual([
 			{ key: "sprint:2026-W16", name: "Sprint 1 — 2026-04-13 → 2026-04-19" },
+		]);
+		// Plan §O — PMP overlay
+		const pmpFolder = plan.folders.find((f) => f.name === "📘 Project Plan");
+		expect(pmpFolder?.lists).toHaveLength(1);
+		expect(pmpFolder?.lists[0].key).toBe("project_plan");
+		expect(pmpFolder?.lists[0].statusOverrides?.map((s) => s.status)).toEqual([
+			"to do",
+			"in progress",
+			"complete",
 		]);
 		expect(plan.statuses).toBe(SPACE_STATUSES);
 		expect(
@@ -327,12 +337,13 @@ describe("planSpace", () => {
 			makeExtract(),
 			makeHistory({ commits: [], sprints: [] }),
 		);
-		// Static scaffold still present.
+		// Static scaffold still present (5 folders incl. PMP overlay).
 		expect(plan.folders.map((f) => f.name)).toEqual([
 			"📦 Backlog & Bugs",
 			"🚧 Active Work",
 			"📜 History",
 			"📚 Knowledge",
+			"📘 Project Plan",
 		]);
 		// No sprint-keyed lists nested under History.
 		const historyFolder = plan.folders.find((f) => f.name === "📜 History")!;
@@ -347,5 +358,33 @@ describe("planSpace", () => {
 		expect(
 			plan.tasks.find((t) => t.key === "warn:history-truncated"),
 		).toBeUndefined();
+		// Plan §O — PMP overlay always emits the 19 charter tasks even on
+		// empty-history repos (the template is the whole point of cold-start).
+		const pmpTasks = plan.tasks.filter((t) => t.key.startsWith("pmp:"));
+		expect(pmpTasks).toHaveLength(19);
+		for (const t of pmpTasks) {
+			expect(t.listKey).toBe("project_plan");
+			expect(t.tags).toContain("source:pmp-template");
+		}
+	});
+
+	it("Plan §O — PMP overlay seeds 19 tasks with display-name substitution", () => {
+		const plan = planSpace(makeRepo(), makeExtract(), makeHistory());
+		const pmp = plan.tasks.filter((t) => t.key.startsWith("pmp:"));
+		expect(pmp).toHaveLength(19);
+		// Status distribution comes through unchanged: 4 / 6 / 9.
+		const dist = pmp.reduce<Record<string, number>>((acc, t) => {
+			acc[t.status] = (acc[t.status] ?? 0) + 1;
+			return acc;
+		}, {});
+		expect(dist).toEqual({ complete: 4, "in progress": 6, "to do": 9 });
+		// Display name (from makeRepo().displayName === "Sample Repo") is in
+		// each task body header — the CSV's "ELECTRONIC SHOPPING SYSTEM"
+		// lead-in must NOT leak through.
+		const scope = pmp.find((t) => t.key === "pmp:scope_management")!;
+		expect(scope.markdown_content).toContain(
+			"# Sample Repo — Scope Management",
+		);
+		expect(scope.markdown_content).not.toContain("ELECTRONIC SHOPPING SYSTEM");
 	});
 });
