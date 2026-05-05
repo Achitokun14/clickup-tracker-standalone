@@ -114,7 +114,10 @@ export class BackfillService implements OnModuleInit {
 
 	/** Enqueue a backfill for a project. Idempotent on jobId. */
 	async enqueue(projectId: string): Promise<string> {
-		const jobId = `backfill:${projectId}`;
+		// Per-call unique jobId — BullMQ dedupes by jobId, so a deterministic
+		// `backfill:<projectId>` would silently no-op every replan after the
+		// first one. We still namespace by projectId for log readability.
+		const jobId = `backfill:${projectId}:${Date.now()}`;
 		await this.queue.addJob(QUEUE_NAME, { projectId }, { jobId, attempts: 1 });
 		return jobId;
 	}
