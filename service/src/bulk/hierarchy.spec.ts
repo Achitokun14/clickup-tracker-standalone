@@ -4,6 +4,7 @@ import {
 	CUSTOM_FIELDS,
 	TASK_SOURCE,
 	mapInlineStatus,
+	snapToFibonacci,
 } from "./hierarchy";
 import type { RepoEntry, RepoExtract } from "./types";
 
@@ -151,5 +152,29 @@ describe("mapInlineStatus", () => {
 		expect(mapInlineStatus("Verifying")).toBe("to do");
 		expect(mapInlineStatus("anything-else")).toBe("to do");
 		expect(mapInlineStatus("")).toBe("to do");
+	});
+});
+
+describe("snapToFibonacci (CU Sprint Points enum)", () => {
+	it("clamps zero / negative / NaN to 1", () => {
+		expect(snapToFibonacci(0)).toBe(1);
+		expect(snapToFibonacci(-3)).toBe(1);
+		expect(snapToFibonacci(NaN)).toBe(1);
+	});
+	it("snaps free-form integers UP to the nearest Fibonacci value", () => {
+		// exact matches
+		expect(snapToFibonacci(1)).toBe(1);
+		expect(snapToFibonacci(2)).toBe(2);
+		expect(snapToFibonacci(8)).toBe(8);
+		// in-between → next-largest
+		expect(snapToFibonacci(4)).toBe(5);
+		expect(snapToFibonacci(6)).toBe(8);
+		expect(snapToFibonacci(7)).toBe(8);
+		expect(snapToFibonacci(9)).toBe(13);
+		expect(snapToFibonacci(20)).toBe(21);
+	});
+	it("caps at 89 for values beyond the supported scale", () => {
+		expect(snapToFibonacci(90)).toBe(89);
+		expect(snapToFibonacci(1000)).toBe(89);
 	});
 });
