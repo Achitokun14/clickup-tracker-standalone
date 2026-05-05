@@ -360,12 +360,38 @@ export class ClickUpDirectService {
 		body: CreateTaskBody,
 		token: string,
 	): Promise<ClickUpTask> {
-		return this.fetchV2<ClickUpTask>(
-			`/list/${listId}/task`,
-			token,
-			"POST",
-			this.normaliseTaskBody(body),
-		);
+		const normalised = this.normaliseTaskBody(body);
+		try {
+			return await this.fetchV2<ClickUpTask>(
+				`/list/${listId}/task`,
+				token,
+				"POST",
+				normalised,
+			);
+		} catch (err) {
+			// CU's "Sprint Points" feature accepts only a workspace-defined
+			// enum of values (Fibonacci by default, but operators can edit
+			// the dropdown). When our heuristic produces a value outside
+			// that enum, CU rejects with ITEM_222. Retry once without
+			// `points` so the task still lands — the operator can set
+			// points by hand if they care about velocity.
+			const msg = (err as Error).message ?? "";
+			if (
+				normalised.points !== undefined &&
+				(msg.includes("ITEM_222") ||
+					msg.includes("not a valid points selection"))
+			) {
+				const retry = { ...normalised };
+				delete retry.points;
+				return this.fetchV2<ClickUpTask>(
+					`/list/${listId}/task`,
+					token,
+					"POST",
+					retry,
+				);
+			}
+			throw err;
+		}
 	}
 
 	/** Subtask = task with `parent` set; same endpoint, same body. */
