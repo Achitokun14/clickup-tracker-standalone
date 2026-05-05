@@ -723,7 +723,9 @@ function planCommitTask(
 
 	const additions = commit.filesChanged.reduce((a, f) => a + f.additions, 0);
 	const deletions = commit.filesChanged.reduce((a, f) => a + f.deletions, 0);
-	const points = Math.max(1, Math.ceil((additions + deletions) / 100));
+	const points = snapToFibonacci(
+		Math.max(1, Math.ceil((additions + deletions) / 100)),
+	);
 	const minutes = estimateMinutes(
 		commit.filesChanged.length,
 		additions + deletions,
@@ -978,6 +980,22 @@ function buildDefaultViews(folders: SpaceFolderPlan[]): ViewDef[] {
 
 function shortSha(sha: string): string {
 	return sha.slice(0, 7);
+}
+
+/**
+ * ClickUp's Sprint Points feature only accepts values from a discrete
+ * agile scale — sending a free-form integer like 4 / 6 / 7 yields
+ * `ITEM_222: not a valid points selection`. Snap UP to the nearest
+ * standard Fibonacci value so we never under-count effort. Anything
+ * above 89 caps at 89 (the largest CU exposes by default).
+ */
+const FIBONACCI_POINTS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89] as const;
+export function snapToFibonacci(n: number): number {
+	if (!Number.isFinite(n) || n <= 1) return 1;
+	for (const v of FIBONACCI_POINTS) {
+		if (n <= v) return v;
+	}
+	return FIBONACCI_POINTS[FIBONACCI_POINTS.length - 1];
 }
 
 const CONVENTIONAL_PREFIX_RX =
